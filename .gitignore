@@ -1,0 +1,5 @@
+# ignore all data files
+data/
+FRoGS/
+results/
+Geneformer/
