@@ -22,7 +22,7 @@ using .DataCoupling
 using .DataSplit
 
 
-### from carl, if not using LincsProject package:
+### from carl, if not using LincsProject package (.Lincs: Data is already incl. in LincsProject)
 # include("/home/golem/scratch/munozc/DDPM/LINCS_data_explorer/SETUP/Lincs.jl")
 # using .Lincs: Data
 # @time data = Data("/home/golem/scratch/munozc/DDPM/Data/out_20M_4.h5")
@@ -42,6 +42,8 @@ wget https://s3.amazonaws.com/macchiato.clue.io/builds/LINCS2020/instinfo_beta.t
 @time lincs_data = LincsProject.Lincs("data/", "level3_beta_all_n3026460x12328.gctx", "data/lincs_data.jld2")
 
 # get untreated gene expression profiles (978 landmark genes) that passed quality control for various cell lines. (lea's project)
+#= Returns a df of 979 columns: cell line, untreated expression profile (978 genes).
+If several untrt profiles are available for a given cell line, they are all stored in the returned df. =#
 untrt_profiles = get_untreated_profiles(lincs_data)
 CSV.write("data/untrt_profiles.csv", untrt_profiles, header=true)
 
@@ -136,11 +138,3 @@ end
 # load splitted data:
 splitted_data_file = splitted_data_dir * "/splitted_data_ref_$(ref_cl)_target_PC3_dose_$(d)_time_$(t).h5"
 splitted_data = DS.load_splitted_data_from_hdf5(splitted_data_file)
-
-
-
-### load in geneformer
-using PyCall # must have ENV["PYTHON"] = "/u/chans/anaconda3/envs/venv/bin/python" then PyCall rebuilt!!!
-geneformer = pyimport("geneformer") # use python -m pip list to check pkgs installed in venv
-classifier = geneformer.Classifier
-
