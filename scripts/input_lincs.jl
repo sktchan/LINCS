@@ -20,6 +20,12 @@ wget https://s3.amazonaws.com/macchiato.clue.io/builds/LINCS2020/instinfo_beta.t
 ### load in lincs dataset (this is the one filtered for Lea's project)
 @time lincs_data = LincsProject.Lincs("data/", "level3_beta_all_n3026460x12328.gctx", "data/lincs_data.jld2")
 
+o = LincsProject.create_filter(lincs_data, Dict(
+    :qc_pass => [Symbol("1")], 
+    :pert_type => [:ctl_untrt, :ctl_vehicle] # , = or
+    ))
+
+
 # get untreated gene expression profiles (978 landmark genes) that passed quality control for various cell lines. (lea's project)
 #= Returns a df of 979 columns: cell line, untreated expression profile (978 genes).
 If several untrt profiles are available for a given cell line, they are all stored in the returned df. =#

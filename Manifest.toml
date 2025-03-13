@@ -452,7 +452,7 @@ version = "1.11.0"
 
 [[deps.LincsProject]]
 deps = ["BenchmarkTools", "CSV", "DataFrames", "ElasticArrays", "HDF5", "JLD2", "LocalRegistry", "ProgressBars"]
-git-tree-sha1 = "ae4ee8726e2428f12b55acadbfa2581df4d6e29f"
+path = "/u/chans/.julia/dev/LincsProject"
 uuid = "f951e42b-01cc-4281-9607-5c79d22473fa"
 version = "0.1.16"
 
