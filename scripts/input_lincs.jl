@@ -1,12 +1,5 @@
 using LincsProject, DataFrames, CSV, Dates, JSON
 
-# import lea's processing code
-push!(LOAD_PATH, "/src")
-using .CompoundEmbeddings
-using .GeneEmbeddings
-using .DataCoupling
-using .DataSplit
-
 # load in beta data via terminal if not present
 #=
 wget https://s3.amazonaws.com/macchiato.clue.io/builds/LINCS2020/level3/level3_beta_all_n3026460x12328.gctx
@@ -20,33 +13,78 @@ wget https://s3.amazonaws.com/macchiato.clue.io/builds/LINCS2020/instinfo_beta.t
 ### load in lincs dataset (this is the one filtered for Lea's project)
 @time lincs_data = LincsProject.Lincs("data/", "level3_beta_all_n3026460x12328.gctx", "data/lincs_data.jld2")
 
+#=
+struct Lincs
+    expr::Matrix{Float32}
+    gene::DataFrame
+    compound::DataFrame
+    inst::DataFrame ## Converted to identifiers only, use inst_si to convert back
+end
+=#
+
 o = LincsProject.create_filter(lincs_data, Dict(
     :qc_pass => [Symbol("1")], 
     :pert_type => [:ctl_untrt, :ctl_vehicle] # , = or
     ))
 
+# creating df of cell line x gene expression 
+filtered_lincs = lincs_data[o]
+filtered_expr = lincs_data.expr[:, o]
+df = DataFrame(transpose(filtered_expr), :auto)
+insertcols!(df, 1, :cell_line => filtered_lincs.cell_iname)
+col_names = ["cell_line"; lincs_data.gene.gene_symbol]
+rename!(df, col_names)
+CSV.write("data/cellline_geneexpr.csv", df)
 
-# get untreated gene expression profiles (978 landmark genes) that passed quality control for various cell lines. (lea's project)
-#= Returns a df of 979 columns: cell line, untreated expression profile (978 genes).
-If several untrt profiles are available for a given cell line, they are all stored in the returned df. =#
-untrt_profiles = get_untreated_profiles(lincs_data)
-CSV.write("data/untrt_profiles.csv", untrt_profiles, header=true)
-
-result_dir = "/home/golem/scratch/chans/lincs/output"
-if !isdir(result_dir)
-    mkpath(result_dir)
-end
-
-
-# ### convert genes into tokens
-# gene_names = names(untrt_profiles)[2:end]
-# gene_token_dict = Dict(gene => i for (i, gene) in enumerate(gene_names))
-# output_path = "/home/golem/scratch/chans/lincs/data/gene_token_dict.json"
-# open(output_path, "w") do f
-#     JSON.print(f, gene_token_dict)
+# result_dir = "/home/golem/scratch/chans/lincs/output"
+# if !isdir(result_dir)
+#     mkpath(result_dir)
 # end
 
 
+### MLP
 
-### ranking to do later
+using Flux, Random, OneHotArrays, CategoricalArrays, ProgressMeter, CUDA
+CUDA.device!(1)
 
+@time df = CSV.read("data/cellline_geneexpr.csv", DataFrame)
+
+# encoding cell line to numerical vals
+df.cell_line = categorical(df.cell_line) 
+df.cell_line_encoded = levelcode.(df.cell_line)
+
+X = Float32.(Matrix(df[:, 2:end-1])') # flux requires format (features × samples)
+y = df.cell_line_encoded
+
+num_classes = length(levels(df.cell_line))
+input_size = size(X, 1)
+
+model = Chain(
+    Dense(input_size, 128, relu),
+    Dense(128, 64, relu),
+    Dense(64, num_classes),
+    softmax
+) |> gpu
+
+n_epochs = 100
+n_batches = 1
+loss(x, y) = Flux.binarycrossentropy(model(x), y)
+opt = Flux.setup(Adam(), model)
+
+y_oh = Flux.onehotbatch(y, 1:num_classes)
+train_data = Flux.DataLoader((X, y_oh), batchsize=n_batches, shuffle=true) |> gpu
+
+losses = []
+@showprogress for epoch in 1:n_epochs
+    loss_val = 0.0
+    for (x, y) in train_data
+        loss_val, grads = Flux.withgradient(model) do m
+            loss(x, y)
+        end
+        Flux.update!(opt, model, grads[1])
+    end
+    push!(losses, loss_val)
+    if epoch % 10 == 0
+        println("Epoch $epoch, Loss: $(losses[end])")
+    end
+end
