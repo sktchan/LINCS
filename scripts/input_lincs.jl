@@ -68,7 +68,7 @@ model = Chain(
 
 n_epochs = 100
 n_batches = 1
-loss(x, y) = Flux.binarycrossentropy(model(x), y)
+loss(x, y) = Flux.logitcrossentropy(model(x), y)
 opt = Flux.setup(Adam(), model)
 
 y_oh = Flux.onehotbatch(y, 1:num_classes)
