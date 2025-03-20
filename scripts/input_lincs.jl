@@ -41,8 +41,8 @@ CSV.write("data/cellline_geneexpr.csv", df)
 
 ### MLP
 
-using Flux, Random, OneHotArrays, CategoricalArrays, ProgressMeter, CUDA, Statistics, Plots
-CUDA.device!(1)
+using Flux, Random, OneHotArrays, CategoricalArrays, ProgressMeter, CUDA, Statistics, Plots, CairoMakie, LinearAlgebra
+CUDA.device!(0)
 
 @time df = CSV.read("data/cellline_geneexpr.csv", DataFrame)
 
@@ -57,48 +57,51 @@ num_classes = length(levels(df.cell_line))
 input_size = size(X, 1)
 
 y_oh = Flux.onehotbatch(y, 1:num_classes)
-X_mean = mean(X, dims=2)
-X_std = std(X, dims=2)
-X_norm = (X .- X_mean) ./ (X_std .+ 1e-6)
+# X_mean = mean(X, dims=2)
+# X_std = std(X, dims=2)
+# X_norm = (X .- X_mean) ./ (X_std .+ 1e-6) 
+# NO DIVIDING BY STD DEV (causes values to be too great after subtracting the mean)
+# is this in all gene expr values?
 
 model = Chain(
-    Dense(input_size, 1024, relu),
-    BatchNorm(1024),
-    Dropout(0.3),
-    Dense(1024, 512, relu),
-    BatchNorm(512),
-    Dropout(0.3),
-    Dense(512, 256, relu),
-    BatchNorm(256),
-    Dropout(0.3),
-    Dense(256, num_classes),
-    softmax
+    Dense(input_size, 256, relu),
+    Dense(256, num_classes)
 ) |> gpu
 
 n_epochs = 100
-n_batches = 64
-loss(x, y) = Flux.logitcrossentropy(model(x), y)
-opt = Flux.setup(Adam(0.0001), model)
+n_batches = 128
+loss(model, x, y) = Flux.logitcrossentropy(model(x), y)
+opt = Flux.setup(Adam(0.001), model)
 
 # if val
-val_ratio = 0.2
+
+val_ratio = 0.2 
+test_ratio = 0.1 
 n = size(X, 2)
-indices = shuffle(1:n)
+
+indices = shuffle(1:n) 
+
 val_size = floor(Int, n * val_ratio)
+test_size = floor(Int, n * test_ratio) 
+train_size = n - val_size - test_size
 
-val_indices = indices[1:val_size]
-train_indices = indices[val_size+1:end]
+test_indices = indices[1:test_size]
+val_indices = indices[test_size+1:test_size+val_size]
+train_indices = indices[test_size+val_size+1:end]
 
-X_train = X_norm[:, train_indices]
-y_train = y_oh[:, train_indices]
-X_val = X_norm[:, val_indices]
-y_val = y_oh[:, val_indices]
+X_train, y_train = X[:, train_indices], y_oh[:, train_indices]
+X_val, y_val = X[:, val_indices], y_oh[:, val_indices]
+X_test, y_test = X[:, test_indices], y_oh[:, test_indices]
 
 train_data = Flux.DataLoader((X_train, y_train), batchsize=n_batches, shuffle=true)
 val_data = Flux.DataLoader((X_val, y_val), batchsize=n_batches, shuffle=true)
+test_data = Flux.DataLoader((X_test, y_test), batchsize=n_batches, shuffle=true) 
 
-train_losses = []
-val_losses = []
+
+train_losses = Float32[] 
+val_losses = Float32[]
+# always try to define the type of array! (if needs to be ultra-fast, use zeroes(type, dim) and reassign a[i] = i rather than push!(a, i))
+# @code_warntype f(x) will show you where the type instability is
 
 @showprogress for epoch in 1:n_epochs
     Flux.trainmode!(model)
@@ -107,37 +110,67 @@ val_losses = []
     for (x, y) in train_data
         x_gpu, y_gpu = gpu(x), gpu(y)
         loss_val, grads = Flux.withgradient(model) do m
-            loss(x_gpu, y_gpu)
+            # loss(model, x_gpu, y_gpu)
+            Flux.logitcrossentropy(m(x_gpu), y_gpu)
         end
         Flux.update!(opt, model, grads[1])
         push!(epoch_losses, loss_val)
     end
-    push!(train_losses, epoch_losses[end])
+    push!(train_losses, mean(epoch_losses))
     
     Flux.testmode!(model)
     val_epoch_losses = Float64[]
     
     for (x, y) in val_data
         x_gpu, y_gpu = gpu(x), gpu(y)
-        val_loss = loss(x_gpu, y_gpu)
+        # val_loss = loss(model, x_gpu, y_gpu)
+        val_loss = Flux.logitcrossentropy(model(x_gpu), y_gpu)
         push!(val_epoch_losses, val_loss)
     end
     
-    push!(val_losses, val_epoch_losses[end])
+    push!(val_losses, mean(val_epoch_losses))
     
-    if epoch % 10 == 0
-        println("epoch $epoch, train loss: $(train_losses[end]), val loss: $(val_losses[end])")
-    end
+    println("epoch $epoch, train loss: $(train_losses[end]), val loss: $(val_losses[end])")
 end
 
 
 ### evaluation metrics
-plot(1:n_epochs, train_losses, label="training loss", xlabel="epoch", ylabel="loss", 
+
+# loss plot
+Plots.plot(1:n_epochs, train_losses, label="training loss", xlabel="epoch", ylabel="loss", 
      title="training vs validation loss", lw=2)
-plot!(1:n_epochs, val_losses, label="validation Loss", lw=2)
-savefig("data/trainval_loss.png")
+Plots.plot!(1:n_epochs, val_losses, label="validation Loss", lw=2)
+Plots.savefig("data/trainval_loss.png")
+
+# compute on test set - for conf matrix + heatmap
+output = model(gpu(X_test))
+maxes = maximum(output, dims=1)
+pred_test = Int.(output .== maxes)'
+true_test = Int.(y_oh[:, test_indices]')
+
+matrix = cpu(pred_test)'true_test # conf matrix
+accuracy = tr(matrix) / sum(matrix) * 100
+
+f = CairoMakie.Figure(size=(800, 800))
+ax = CairoMakie.Axis(
+    f[1, 1], 
+    xlabel="cell line (n=$num_classes)", 
+    ylabel="cell line (n=$num_classes)",
+    title="accuracy: $accuracy%")
+conf_matrix = CairoMakie.heatmap!(ax, log10.(matrix .+ 1))
+CairoMakie.Colorbar(f[1, 2], conf_matrix, label="log10(count)")
+CairoMakie.save("data/conf_matrix.png", f)
+f
 
 
+
+
+
+
+
+
+####################################################################################################################
+####################################################################################################################
 ####################################################################################################################
 
 
