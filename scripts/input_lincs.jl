@@ -162,11 +162,56 @@ CairoMakie.Colorbar(f[1, 2], conf_matrix, label="log10(count)")
 CairoMakie.save("data/conf_matrix.png", f)
 f
 
+# hierarchical clustering
+using Distances, Clustering, StatsPlots
 
+data = Matrix(df[:, 2:end-1])
 
+cell_line_names = df.cell_line
+unique_cell_lines = unique(cell_line_names)
+mean_profiles = zeros(size(data, 2), length(unique_cell_lines))
 
+for (i, cell_line) in enumerate(unique_cell_lines)
+    indices = findall(x -> x == cell_line, cell_line_names)
+    mean_profiles[:, i] = mean(data[indices, :], dims=1)
+end
 
+distances = pairwise(Euclidean(), mean_profiles)
 
+result = hclust(distances, linkage=:average)
+
+dend2 = StatsPlots.plot(result, 
+                xrotation=90, 
+                xticks=(1:length(unique_cell_lines), unique_cell_lines[result.order]),
+                title="Cell Line Clustering",
+                size=(2400, 1000),
+                tickfont=font(8),
+                titlefont=font(24))  
+StatsPlots.savefig("data/dendrogram.png")
+
+hier_order = unique_cell_lines[result.order]
+
+# heatmap sorted
+
+order_mapping = Dict(name => i for (i, name) in enumerate(hier_order))
+reorder_indices = [findfirst(==(name), unique_cell_lines) for name in hier_order]
+sorted_matrix = matrix[reorder_indices, reorder_indices]
+
+f = CairoMakie.Figure(size=(1400, 1400))
+ax = CairoMakie.Axis(
+    f[1, 1], 
+    xlabel="cell line (n=$num_classes)", 
+    ylabel="cell line (n=$num_classes)",
+    title="accuracy: $accuracy%",
+    xticks=(1:length(hier_order), hier_order),
+    yticks=(1:length(hier_order), hier_order),
+    xticklabelrotation=90,
+    xticklabelsize=8,
+    yticklabelsize=8
+)
+hm = CairoMakie.heatmap!(ax, sorted_matrix)
+CairoMakie.Colorbar(f[1, 2], hm)
+CairoMakie.save("data/sorted_conf_matrix.png", f)
 
 
 ####################################################################################################################
