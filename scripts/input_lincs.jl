@@ -140,7 +140,7 @@ end
 Plots.plot(1:n_epochs, train_losses, label="training loss", xlabel="epoch", ylabel="loss", 
      title="training vs validation loss", lw=2)
 Plots.plot!(1:n_epochs, val_losses, label="validation Loss", lw=2)
-Plots.savefig("data/trainval_loss.png")
+Plots.savefig("data/plots/trainval_loss.png")
 
 # compute on test set - for conf matrix + heatmap
 output = model(gpu(X_test))
@@ -187,7 +187,7 @@ dend2 = StatsPlots.plot(result,
                 size=(2400, 1000),
                 tickfont=font(8),
                 titlefont=font(24))  
-StatsPlots.savefig("data/dendrogram.png")
+StatsPlots.savefig("data/plots/dendrogram.png")
 
 hier_order = unique_cell_lines[result.order]
 
@@ -197,7 +197,7 @@ order_mapping = Dict(name => i for (i, name) in enumerate(hier_order))
 reorder_indices = [findfirst(==(name), unique_cell_lines) for name in hier_order]
 sorted_matrix = matrix[reorder_indices, reorder_indices]
 
-f = CairoMakie.Figure(size=(1400, 1400))
+f = CairoMakie.Figure(size=(1600, 1600))
 ax = CairoMakie.Axis(
     f[1, 1], 
     xlabel="cell line (n=$num_classes)", 
@@ -207,105 +207,14 @@ ax = CairoMakie.Axis(
     yticks=(1:length(hier_order), hier_order),
     xticklabelrotation=90,
     xticklabelsize=8,
-    yticklabelsize=8
-)
-hm = CairoMakie.heatmap!(ax, sorted_matrix)
+    yticklabelsize=8,
+    )
+hm = CairoMakie.heatmap!(ax, log10.(sorted_matrix .+ 1))
 CairoMakie.Colorbar(f[1, 2], hm)
-CairoMakie.save("data/sorted_conf_matrix.png", f)
+CairoMakie.save("data/plots/sorted_conf_matrix.png", f)
 
 
 ####################################################################################################################
 ####################################################################################################################
 ####################################################################################################################
-
-
-# if filtering cell lines w/ <10 samples
-
-min_samples_per_class = 10
-class_counts = [count(==(i), y) for i in 1:num_classes]
-valid_classes = findall(class_counts .>= min_samples_per_class)
-
-valid_samples = [y[i] in valid_classes for i in 1:length(y)]
-X_filt = X[:, valid_samples]
-y_filt = y[valid_samples]
-
-num_filtered_classes = length(valid_classes)
-
-y_mapping = Dict(valid_classes[i] => i for i in 1:length(valid_classes))
-y_remapped = [y_mapping[y_filtered[i]] for i in 1:length(y_filtered)]
-
-y_filt_oh = Flux.onehotbatch(y_remapped, 1:num_filtered_classes)
-X_filt_mean = mean(X_filt, dims=2)
-X_filt_std = std(X_filt, dims=2)
-X_filt_norm = (X_filt .- X_filt_mean) ./ (X_filt_std .+ 1e-6)
-
-model = Chain(
-    Dense(input_size, 1024, relu),
-    BatchNorm(1024),
-    Dropout(0.3),
-    Dense(1024, 512, relu),
-    BatchNorm(512),
-    Dropout(0.3),
-    Dense(512, 256, relu),
-    BatchNorm(256),
-    Dropout(0.3),
-    Dense(256, num_classes),
-    softmax
-) |> gpu
-
-val_ratio = 0.2
-n_filt = size(X_filt, 2)
-indices_filt = shuffle(1:n_filt)
-val_filt_size = floor(Int, n_filt * val_ratio)
-
-val_filt_indices = indices_filt[1:val_filt_size]
-train_filt_indices = indices_filt[val_filt_size+1:end]
-
-X_filt_train = X_filt_norm[:, train_filt_indices]
-y_filt_train = y_filt_oh[:, train_filt_indices]
-X_filt_val = X_filt_norm[:, val_filt_indices]
-y_filt_val = y_filt_oh[:, val_filt_indices]
-
-n_epochs = 100
-n_batches = 64
-loss(x, y) = Flux.logitcrossentropy(model(x), y)
-opt = Flux.setup(Adam(0.0001), model)
-
-train_filt_data = Flux.DataLoader((X_filt_train, y_filt_train), batchsize=n_batches, shuffle=true)
-val_filt_data = Flux.DataLoader((X_filt_val, y_filt_val), batchsize=n_batches, shuffle=false)
-
-train_filt_losses = []
-val_filt_losses = []
-
-@showprogress for epoch in 1:n_epochs
-    Flux.trainmode!(model)
-    epoch_losses = Float64[]
-    for (x, y) in train_filt_data
-        x_gpu, y_gpu = gpu(x), gpu(y)
-        loss_val, grads = Flux.withgradient(model) do m
-            loss(x_gpu, y_gpu)
-        end
-        Flux.update!(opt, model, grads[1])
-        push!(epoch_losses, loss_val)
-    end
-    push!(train_filt_losses, mean(epoch_losses))
-    Flux.testmode!(model)
-    val_epoch_losses = Float64[]
-    for (x, y) in val_filt_data
-        x_gpu, y_gpu = gpu(x), gpu(y)
-        val_loss = loss(x_gpu, y_gpu)
-        push!(val_epoch_losses, val_loss)
-    end
-    push!(val_filt_losses, mean(val_epoch_losses))
-    if epoch % 10 == 0
-        println("epoch $epoch, train loss: $(train_filt_losses[end]), val loss: $(val_filt_losses[end])")
-    end
-end
-
-
-
-
-
-
-
 
