@@ -1,5 +1,3 @@
 # ignore all data files, these can be regenerated
 data/
-FRoGS/
-Geneformer/
 practice/
