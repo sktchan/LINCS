@@ -21,6 +21,7 @@ struct Lincs
 end
 =#
 
+### filter for untreated cell lines
 o = LincsProject.create_filter(lincs_data, Dict(
     :qc_pass => [Symbol("1")], 
     :pert_type => [:ctl_untrt, :ctl_vehicle] # , = or
@@ -35,16 +36,32 @@ col_names = ["cell_line"; lincs_data.gene.gene_symbol]
 rename!(df, col_names)
 CSV.write("data/cellline_geneexpr.csv", df)
 
+### on all cell line profiles (trt + untrt)
+x = LincsProject.create_filter(lincs_data, Dict(
+    :qc_pass => [Symbol("1")], 
+    :pert_type => [:ctl_untrt, :ctl_vehicle, :trt_cp] # , = or
+    ))
+
+filtered_lincs_all = lincs_data[x]
+filtered_expr_all = lincs_data.expr[:, x]
+df = DataFrame(transpose(filtered_expr_all), :auto)
+insertcols!(df, 1, :cell_line => filtered_lincs_all.cell_iname)
+col_names = ["cell_line"; lincs_data.gene.gene_symbol]
+rename!(df, col_names)
+CSV.write("data/all_cellline_geneexpr.csv", df)
 
 ####################################################################################################################
 
+#TODO: just run the below code to ensure accuracy/loss is ok when using both untrt and trt cell lines
+    #also make sure that it saves into /home/golem/scratch/chans/lincs/data/plots/trt_and_untrt
 
 ### MLP
 
 using Flux, Random, OneHotArrays, CategoricalArrays, ProgressMeter, CUDA, Statistics, Plots, CairoMakie, LinearAlgebra
 CUDA.device!(0)
 
-@time df = CSV.read("data/cellline_geneexpr.csv", DataFrame)
+# @time df = CSV.read("data/cellline_geneexpr.csv", DataFrame)
+@time df = CSV.read("data/all_cellline_geneexpr.csv", DataFrame)
 
 # encoding cell line to numerical vals
 df.cell_line = categorical(df.cell_line) 
@@ -140,7 +157,7 @@ end
 Plots.plot(1:n_epochs, train_losses, label="training loss", xlabel="epoch", ylabel="loss", 
      title="training vs validation loss", lw=2)
 Plots.plot!(1:n_epochs, val_losses, label="validation Loss", lw=2)
-Plots.savefig("data/plots/trainval_loss.png")
+Plots.savefig("data/plots/trt_and_untrt/trainval_loss.png")
 
 # compute on test set - for conf matrix + heatmap
 output = model(gpu(X_test))
@@ -159,7 +176,7 @@ ax = CairoMakie.Axis(
     title="accuracy: $accuracy%")
 conf_matrix = CairoMakie.heatmap!(ax, log10.(matrix .+ 1))
 CairoMakie.Colorbar(f[1, 2], conf_matrix, label="log10(count)")
-CairoMakie.save("data/conf_matrix.png", f)
+CairoMakie.save("data/plots/trt_and_untrt/conf_matrix.png", f)
 f
 
 # hierarchical clustering
@@ -187,7 +204,7 @@ dend2 = StatsPlots.plot(result,
                 size=(2400, 1000),
                 tickfont=font(8),
                 titlefont=font(24))  
-StatsPlots.savefig("data/plots/dendrogram.png")
+StatsPlots.savefig("data/plots/trt_and_untrt/dendrogram.png")
 
 hier_order = unique_cell_lines[result.order]
 
@@ -211,10 +228,11 @@ ax = CairoMakie.Axis(
     )
 hm = CairoMakie.heatmap!(ax, log10.(sorted_matrix .+ 1))
 CairoMakie.Colorbar(f[1, 2], hm)
-CairoMakie.save("data/plots/sorted_conf_matrix.png", f)
+CairoMakie.save("data/plots/trt_and_untrt/sorted_conf_matrix.png", f)
 
 
 ####################################################################################################################
 ####################################################################################################################
 ####################################################################################################################
+
 

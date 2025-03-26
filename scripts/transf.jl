@@ -31,8 +31,8 @@ X_train, y_train = X[:, train_indices], y_oh[:, train_indices]
 X_test, y_test = X[:, test_indices], y_oh[:, test_indices]
 
 batch_size = 256
-train_data = Flux.DataLoader((X_train, y_train), batchsize=batch_size, shuffle=true) |> gpu
-test_data = Flux.DataLoader((X_test, y_test), batchsize=batch_size)|> gpu
+train_data = Flux.DataLoader((X_train, y_train), batchsize=batch_size, shuffle=true)
+test_data = Flux.DataLoader((X_test, y_test), batchsize=batch_size)
 
 
 ###############################################################################################
@@ -136,12 +136,10 @@ train!(model, train_data, test_data, 10)
 ### w/ token embeddings
 num_genes = 978
 embedding_dim = 32
-hidden_size = 512
-num_heads = 8
 
-gene_embedding = Embed(num_genes => embedding_dim) |> gpu
-pos_embed = LearnablePositionEmbed(num_genes, embedding_dim) |> gpu  # Optional
-encoder = Transformer(TransformerBlock, 2, num_heads, hidden_size, hidden_size÷num_heads, 4hidden_size) |> gpu
+gene_embedding = Embed(hidden_size, len(num_genes)) |> gpu
+pos_embed = SinCosPositionEmbed(num_genes, embedding_dim) |> gpu
+encoder = Transformer(TransformerBlock, 2, head_num, hidden_size, hidden_size÷head_num, 4hidden_size) |> gpu
 classifier = Chain(Dense(hidden_size => num_classes), softmax) |> gpu
 
 function model(X)
