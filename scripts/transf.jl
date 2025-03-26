@@ -51,7 +51,6 @@ encoder = Transformer(TransformerBlock, num_layers, head_num, hidden_size, head_
 classifier = Chain(
     LayerNorm(hidden_size),
     Dense(hidden_size => hidden_size ÷ 2, gelu),
-    Dropout(0.1),
     Dense(hidden_size ÷ 2 => num_classes)
 ) |> gpu
 
@@ -129,6 +128,34 @@ end
 
 # add per epoch here
 train!(model, train_data, test_data, 10)
+
+
+###############################################################################################
+
+
+### w/ token embeddings
+num_genes = 978
+embedding_dim = 32
+hidden_size = 512
+num_heads = 8
+
+gene_embedding = Embed(num_genes => embedding_dim) |> gpu
+pos_embed = LearnablePositionEmbed(num_genes, embedding_dim) |> gpu  # Optional
+encoder = Transformer(TransformerBlock, 2, num_heads, hidden_size, hidden_size÷num_heads, 4hidden_size) |> gpu
+classifier = Chain(Dense(hidden_size => num_classes), softmax) |> gpu
+
+function model(X)
+    gene_ids = 1:num_genes
+    emb = gene_embedding(gene_ids)  # (num_genes × embedding_dim)
+    scaled = X * emb'  # (batch × num_genes) × (num_genes × embedding_dim)
+
+    scaled += pos_embed(gene_ids)
+
+    encoded = encoder(permutedims(scaled, (2, 1, 3))).hidden_state
+    pooled = mean(encoded, dims=1)
+    return classifier(dropdims(pooled, dims=1))
+end
+
 
 ###############################################################################################
 
