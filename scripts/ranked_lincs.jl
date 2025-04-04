@@ -1,66 +1,25 @@
+#TODO: optimize model, decreases slightly but remains around 3 rather than 0 after the first epoch
+#TODO: double check ranking method
+#TODO: if time, create module/function to do training and eval so can reuse :D
+
 using LincsProject, DataFrames, CSV, Dates, JSON, StatsBase
-
-# load in beta data via terminal if not present
-#=
-wget https://s3.amazonaws.com/macchiato.clue.io/builds/LINCS2020/level3/level3_beta_all_n3026460x12328.gctx
-wget https://s3.amazonaws.com/macchiato.clue.io/builds/LINCS2020/cellinfo_beta.txt
-wget https://s3.amazonaws.com/macchiato.clue.io/builds/LINCS2020/compoundinfo_beta.txt
-wget https://s3.amazonaws.com/macchiato.clue.io/builds/LINCS2020/geneinfo_beta.txt
-wget https://s3.amazonaws.com/macchiato.clue.io/builds/LINCS2020/instinfo_beta.txt
-=#
-
-### load in lincs dataset (this is the one filtered for Lea's project)
-@time lincs_data = LincsProject.Lincs("data/", "level3_beta_all_n3026460x12328.gctx", "data/lincs_data.jld2")
-
-#=
-struct Lincs
-    expr::Matrix{Float32}
-    gene::DataFrame
-    compound::DataFrame
-    inst::DataFrame ## Converted to identifiers only, use inst_si to convert back
-end
-=#
-
-### filter for untreated cell lines, 978 x 100425
-o = LincsProject.create_filter(lincs_data, Dict(
-    :qc_pass => [Symbol("1")], 
-    :pert_type => [:ctl_untrt, :ctl_vehicle] # , = or
-    ))
-
-# creating df of cell line x gene expression 
-filtered_lincs = lincs_data[o]
-filtered_expr = lincs_data.expr[:, o]
-df = DataFrame(transpose(filtered_expr), :auto)
-insertcols!(df, 1, :cell_line => filtered_lincs.cell_iname)
-col_names = ["cell_line"; lincs_data.gene.gene_symbol]
-rename!(df, col_names)
-CSV.write("data/cellline_geneexpr.csv", df)
-
-### on all cell line profiles (trt + untrt), 978 x 1412595
-x = LincsProject.create_filter(lincs_data, Dict(
-    :qc_pass => [Symbol("1")], 
-    :pert_type => [:ctl_untrt, :ctl_vehicle, :trt_cp] # , = or
-    ))
-
-filtered_lincs_all = lincs_data[x]
-filtered_expr_all = lincs_data.expr[:, x]
-df = DataFrame(transpose(filtered_expr_all), :auto)
-insertcols!(df, 1, :cell_line => filtered_lincs_all.cell_iname)
-col_names = ["cell_line"; lincs_data.gene.gene_symbol]
-rename!(df, col_names)
-CSV.write("data/all_cellline_geneexpr.csv", df)
-
-####################################################################################################################
-
-#TODO: untrt and trt validation loss look messed up :( (trt way worse), with accuracy still around 98-99%
-
-### MLP
-
 using Flux, Random, OneHotArrays, CategoricalArrays, ProgressMeter, CUDA, Statistics, Plots, CairoMakie, LinearAlgebra
 CUDA.device!(0)
 
-@time df = CSV.read("data/cellline_geneexpr.csv", DataFrame)
-# @time df = CSV.read("data/all_cellline_geneexpr.csv", DataFrame)
+@time df = CSV.read("data/cellline_geneexpr.csv", DataFrame) # untrt only
+# @time df = CSV.read("data/all_cellline_geneexpr.csv", DataFrame) # trt and untrt
+
+### ranking encodings
+
+df_ranked = copy(df)
+gene_columns = names(df)[2:end]
+n_exp = nrow(df_ranked)
+
+for col_name in gene_columns
+    expression_values = df_ranked[!, col_name]
+    ranks = ordinalrank(-expression_values)
+    df_ranked[!, col_name] = ranks ./ n_exp
+end
 
 # encoding cell line to numerical vals
 df.cell_line = categorical(df.cell_line) 
@@ -72,22 +31,25 @@ y = df.cell_line_encoded
 num_classes = length(levels(df.cell_line))
 input_size = size(X, 1)
 
-y_oh = Flux.onehotbatch(y, 1:num_classes)
-# X_mean = mean(X, dims=2)
-# X_std = std(X, dims=2)
-# X_norm = (X .- X_mean) ./ (X_std .+ 1e-6) 
-# NO DIVIDING BY STD DEV (causes values to be too great after subtracting the mean)
-# is this in all gene expr values?
+y_oh = Float32.(Flux.onehotbatch(y, 1:num_classes))
 
 model = Chain(
     Dense(input_size, 256, relu),
     Dense(256, num_classes)
 ) |> gpu
 
+model = Chain(
+    Dense(input_size, 256, relu; init=Flux.glorot_uniform),
+    Dropout(0.3),
+    Dense(256, 128, relu; init=Flux.glorot_uniform),
+    Dropout(0.3),
+    Dense(128, num_classes; init=Flux.glorot_uniform)
+) |> gpu
+
 n_epochs = 100
 n_batches = 128
 loss(model, x, y) = Flux.logitcrossentropy(model(x), y)
-opt = Flux.setup(Adam(0.001), model)
+opt = Flux.setup(Adam(0.0001), model)
 
 # if val
 
@@ -116,8 +78,6 @@ test_data = Flux.DataLoader((X_test, y_test), batchsize=n_batches, shuffle=true)
 
 train_losses = Float32[] 
 val_losses = Float32[]
-# always try to define the type of array! (if needs to be ultra-fast, use zeroes(type, dim) and reassign a[i] = i rather than push!(a, i))
-# @code_warntype f(x) will show you where the type instability is
 
 @showprogress for epoch in 1:n_epochs
     Flux.trainmode!(model)
@@ -146,7 +106,9 @@ val_losses = Float32[]
     
     push!(val_losses, mean(val_epoch_losses))
     
-    println("epoch $epoch, train loss: $(train_losses[end]), val loss: $(val_losses[end])")
+    if epoch % 10 == 0
+        println("epoch $epoch, train loss: $(train_losses[end]), val loss: $(val_losses[end])")
+    end
 end
 
 
@@ -162,6 +124,20 @@ Plots.savefig("data/plots/ranked_trt_and_untrt/trainval_loss.png")
 output = model(gpu(X_test))
 maxes = maximum(output, dims=1)
 pred_test = Int.(output .== maxes)'
+## Is it random?
+# n = size(pred_test)[1]
+# o = shuffle(1:n)
+# rand_test = pred_test[o, :]
+# pred_test = rand_test
+
+# Is it all the same answer?
+n, m = size(pred_test)
+all_sum = Int[]
+cpu_pt = cpu(pred_test)
+
+
+all_sum = sum(cpu_pt, dims=1)[1,:]
+sort(all_sum)
 true_test = Int.(y_oh[:, test_indices]')
 
 matrix = cpu(pred_test)'true_test # conf matrix
@@ -228,10 +204,3 @@ ax = CairoMakie.Axis(
 hm = CairoMakie.heatmap!(ax, log10.(sorted_matrix .+ 1))
 CairoMakie.Colorbar(f[1, 2], hm)
 CairoMakie.save("data/plots/trt_and_untrt/sorted_conf_matrix.png", f)
-
-
-####################################################################################################################
-####################################################################################################################
-####################################################################################################################
-
-
