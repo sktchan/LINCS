@@ -28,6 +28,9 @@ df.cell_line_encoded = levelcode.(df.cell_line)
 X = Float32.(Matrix(df_ranked[:, 2:end-1])') # flux requires format (features × samples)
 y = df.cell_line_encoded
 
+# CSV.write("data/ranked_features.csv", X)
+# CSV.write("data/ranked_labels.csv", y)
+
 num_classes = length(levels(df.cell_line))
 input_size = size(X, 1)
 
