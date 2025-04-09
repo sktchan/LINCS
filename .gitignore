@@ -1,3 +1,6 @@
 # ignore all data files, these can be regenerated
 data/
 practice/
+
+# this src is for FRoGS (lea's code)
+src/ 

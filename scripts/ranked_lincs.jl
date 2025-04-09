@@ -6,7 +6,7 @@ using LincsProject, DataFrames, CSV, Dates, JSON, StatsBase
 using Flux, Random, OneHotArrays, CategoricalArrays, ProgressMeter, CUDA, Statistics, Plots, CairoMakie, LinearAlgebra
 CUDA.device!(0)
 
-@time df = CSV.read("data/cellline_geneexpr.csv", DataFrame) # untrt only
+x # untrt only
 # @time df = CSV.read("data/all_cellline_geneexpr.csv", DataFrame) # trt and untrt
 
 ### ranking encodings
