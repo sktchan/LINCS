@@ -70,12 +70,12 @@ function (tf::Transf)(input::Float32Matrix2DType) # input is features (978) x ba
     input_3d = reshape(input, features, 1, batch) # (features x 1 x batch) for mhsa input
 
     normed = tf.norm_1(input_3d)
-    sa_out = tf.mhsa(normed, normed, normed) # OG paper states norm after sa, but norm before sa is more common?
+    sa_out, _ = tf.mhsa(normed, normed, normed) # OG paper states norm after sa, but norm before sa is more common?
 
     # FIXME: why is it outputting a 3D and 4D tensor?
-    print("type: ", typeof(sa_out)) # output: type: Tuple{CuArray{Float32, 3, CUDA.DeviceMemory}, CuArray{Float32, 4, CUDA.DeviceMemory}}
-    print("size of 1: ", size(sa_out[1])) # output: (128, 1, 32)
-    print("size of 2: ", size(sa_out[2])) # output: (1, 1, 8, 32)
+    # print("type: ", typeof(sa_out)) # output: type: Tuple{CuArray{Float32, 3, CUDA.DeviceMemory}, CuArray{Float32, 4, CUDA.DeviceMemory}}
+    # print("size of 1: ", size(sa_out[1])) # output: (128, 1, 32)
+    # print("size of 2: ", size(sa_out[2])) # output: (1, 1, 8, 32)
 
     sa_out_2d = reshape(sa_out, features, batch) # (features x batch) for mlp input
     x = input + sa_out_2d
@@ -185,22 +185,53 @@ model = Model(
 
 opt = Flux.setup(Adam(lr), model)
 # TODO: crossentropy vs. mae...?
-loss(model, x, y) = Flux.logitcrossentropy(model(x), y)
+function loss(model, x, y) # TODO: should i be converting to one-hot in preprocessing instead of here?
+    logits = model(x)  # (num_classes, batch_size)
+    y_oh = Flux.onehotbatch(y, 1:num_classes)  # convert to one-hot since target labels are of (batch_size,) to match logits
+    return Flux.logitcrossentropy(logits, y_oh)
+end
 # loss = logitcrossentropy(model(x), y) + α * sum(p -> sum(abs2, p), params(model)) # L2 regularization
 train_dataloader = Flux.DataLoader((X_train, y_train), batchsize=batch_size)
+test_dataloader = Flux.DataLoader((X_test, y_test), batchsize=batch_size)
 
 train_losses = Float32[]
+test_losses = Float32[]
+test_accuracies = Float32[]
 for epoch in ProgressBar(1:n_epochs)
     Flux.trainmode!(model)
     epoch_losses = Float32[]
     for (x, y) in train_dataloader # x dimensions = 978 * batch_size. y dimensions = 1 * batch_size
         x_gpu, y_gpu = gpu(x), gpu(y)
+
         loss_val, grads = Flux.withgradient(model) do m
             loss(m, x_gpu, y_gpu)
         end
         Flux.update!(opt, model, grads[1])
         push!(epoch_losses, loss_val)
     end
-    push!(train_losses, epoch_losses[end])
-    println("epoch $epoch, train loss: $(train_losses[end])")
+    push!(train_losses, mean(epoch_losses))
+    # println("epoch $epoch, train loss: $(train_losses[end])")
+    
+    Flux.testmode!(model)
+    test_epoch_losses = Float32[]
+    tp = 0
+    totals = 0
+    for (x, y) in test_dataloader
+        x_gpu, y_gpu = gpu(x), gpu(y)
+
+        test_loss_val = loss(model, x_gpu, y_gpu)
+        push!(test_epoch_losses, test_loss_val)
+
+        logits = model(x_gpu)
+        preds = Flux.onecold(logits) |> cpu # convert logits to predicted class labels
+        y_cpu = cpu(y_gpu)
+
+        tp += sum(preds .== y_cpu) # true positives
+        totals += length(y_cpu) # total samples
+    end
+
+    test_acc = tp / totals
+    push!(test_losses, mean(test_epoch_losses))
+    push!(test_accuracies, test_acc)
+
 end
