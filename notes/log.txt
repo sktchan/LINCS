@@ -1,0 +1,14 @@
+<< to keep track of changes made, prev. ideas, etc. >>
+
+apr 8, 2025 - flux.transf.jl
+this is what was used for original 2D input into mhsa (which doesn't work, needs (k, q, v) input)
+function (tf::Transf)(input::Float32Matrix2DType) # input is features (978) x batch
+    sa_out = tf.mhsa(tf.norm_1(input)) # OG paper states norm after sa, but norm before sa is more common?
+    # x = input + tf.dropout(sa_out)
+    x = input + sa_out
+    mlp_out = tf.mlp(tf.norm_2(x))
+    # x = x + tf.dropout(mlp_out)
+    x = x + mlp_out
+    return x
+end
+
