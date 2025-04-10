@@ -6,8 +6,8 @@ using LincsProject, DataFrames, CSV, Dates, JSON, StatsBase
 using Flux, Random, OneHotArrays, CategoricalArrays, ProgressBars, CUDA, Statistics, Plots, CairoMakie, LinearAlgebra
 CUDA.device!(0)
 
-# @time df = CSV.read("data/cellline_geneexpr.csv", DataFrame) # untrt only
-@time df = CSV.read("data/all_cellline_geneexpr.csv", DataFrame) # trt and untrt
+@time df = CSV.read("data/cellline_geneexpr.csv", DataFrame) # untrt only
+# @time df = CSV.read("data/all_cellline_geneexpr.csv", DataFrame) # trt and untrt
 
 ### ranking encodings across columns
 
@@ -216,25 +216,48 @@ CairoMakie.save("data/plots/trt_and_untrt/sorted_conf_matrix.png", f)
 
 ### ranking encodings across rows
 
+# Create a copy of the original dataframe
 df_rows_ranked = copy(df)
+
+# Get all gene columns (excluding cell_line)
 gene_columns = names(df)[2:end]
 
-for i in 1:nrow(df_rows_ranked)
-    expression_values = Array(df_rows_ranked[i, gene_columns])
-    ranks = ordinalrank(-expression_values)
+# Create a matrix view of just the gene expression data
+expression_matrix = Matrix(df[:, gene_columns])
+
+# Initialize a matrix of the same size to hold ranks
+n_rows, n_cols = size(expression_matrix)
+rank_matrix = similar(expression_matrix)
+
+# Process each row efficiently
+Threads.@threads for i in 1:n_rows
+    # Use sortperm to get the ranks directly
+    # sortperm returns indices that would sort the array
+    # We reverse it to get descending order (high values → low ranks)
+    idx = sortperm(expression_matrix[i,:], rev=true)
     
-    # Create a new row with the same structure as the original
-    for (j, col) in enumerate(gene_columns)
-        df_rows_ranked[i, col] = ranks[j] / length(gene_columns)
+    # Create array of ranks
+    row_ranks = zeros(n_cols)
+    for j in 1:n_cols
+        row_ranks[idx[j]] = j
     end
+    
+    # Normalize if desired
+    row_ranks = row_ranks ./ n_cols
+    
+    # Store in rank matrix
+    rank_matrix[i,:] = row_ranks
 end
 
-# encoding cell line to numerical vals
-df_rows_ranked.cell_line = categorical(df.cell_line) 
-df_rows_ranked.cell_line_encoded = levelcode.(df.cell_line)
+# Update the dataframe with the new ranks
+df_rows_ranked[:, gene_columns] = rank_matrix
 
-X = Float32.(Matrix(df_rows_ranked[:, 2:end-1])') # flux requires format (features × samples)
-y = df_rows_ranked.cell_line_encoded
+### encoding cell line to numerical vals
+df_rows_ranked.cell_line = categorical(df_rows_ranked.cell_line) 
+df_rows_ranked.cell_line_encoded = levelcode.(df_rows_ranked.cell_line)
+
+X = Float32.(Matrix(df_rows_ranked[:, 2:end-1])')|> gpu # flux requires format (features × samples)
+y = df_rows_ranked.cell_line_encoded |> gpu
 
 # CSV.write("data/ranked_features.csv", X)
 # CSV.write("data/ranked_labels.csv", y)
@@ -242,7 +265,7 @@ y = df_rows_ranked.cell_line_encoded
 num_classes = length(levels(df_rows_ranked.cell_line))
 input_size = size(X, 1)
 
-y_oh = Float32.(Flux.onehotbatch(y, 1:num_classes))
+y_oh = Float32.(Flux.onehotbatch(y, 1:num_classes)) |> gpu
 
 model = Chain(
     Dense(input_size, 256, relu),
@@ -278,6 +301,7 @@ test_indices = indices[1:test_size]
 val_indices = indices[test_size+1:test_size+val_size]
 train_indices = indices[test_size+val_size+1:end]
 
+# DIES HERE???
 X_train, y_train = X[:, train_indices], y_oh[:, train_indices]
 X_val, y_val = X[:, val_indices], y_oh[:, val_indices]
 X_test, y_test = X[:, test_indices], y_oh[:, test_indices]
@@ -329,7 +353,7 @@ end
 Plots.plot(1:n_epochs, train_losses, label="training loss", xlabel="epoch", ylabel="loss", 
      title="training vs validation loss", lw=2)
 Plots.plot!(1:n_epochs, val_losses, label="validation Loss", lw=2)
-Plots.savefig("data/plots/rows_ranked_trt_and_untrt/trainval_loss.png")
+Plots.savefig("data/plots/rows_ranked_untrt/trainval_loss.png")
 
 # compute on test set - for conf matrix + heatmap
 output = model(gpu(X_test))
