@@ -1,22 +1,35 @@
-using LincsProject, DataFrames, CSV, Dates, JSON, StatsBase
+using LincsProject, DataFrames, CSV, Dates, JSON, StatsBase, JLD2
 using Flux, Random, OneHotArrays, CategoricalArrays, ProgressBars, CUDA, Statistics, Plots, CairoMakie, LinearAlgebra
-CUDA.device!(0)
+CUDA.device!(1)
 
 # @time df = CSV.read("data/all_cellline_geneexpr.csv", DataFrame) # trt and untrt
-@time df = CSV.read("data/cellline_geneexpr.csv", DataFrame) # untrt only
+# @time df = CSV.read("data/cellline_geneexpr.csv", DataFrame) # untrt only
+data = load("data/lincs_filtered_data.jld2")["filtered_data"] # using jld2 is way faster for loading/reading than csv
 
-### prev: ranking gene expr level
+### tokenization
 
-df_ranked = copy(df)
-gene_columns = names(df)[2:end]
-n_exp = nrow(df_ranked)
-
-for col_name in gene_columns
-    expression_values = df_ranked[!, col_name]
-    ranks = ordinalrank(-expression_values)
-    df_ranked[!, col_name] = ranks ./ n_exp
+function sort_gene(expr)
+    data_ranked = Matrix{Int}(undef, size(expr)) # faster than fill(-1, size(expr))
+    n, m = size(expr)
+    sorted_ind_col = Vector{Int}(undef, n)
+    for j in 1:m
+        unsorted_expr_col = view(expr, :, j)
+        sortperm!(sorted_ind_col, unsorted_expr_col, rev=true)
+            # rev=true -> data[1, :] = index (into gene.expr) of highest expression value in experiment/column 1
+        for i in 1:n
+            data_ranked[i, j] = sorted_ind_col[i]
+        end
+    end
+    return data_ranked
 end
 
+@time ranked_data = sort_gene(data.expr) # lookup table of indices from highest rank to lowest rank gene
+
+### DONE HERE SO FAR IN REDOING TRANSF
+#TODO: HOW TO INPUT INTO FLUX.EMBEDDING() --> TRANSF --> OUTPUT?? DO WE NEED INPUT --> FLUX.EMBEDDING() FIRST? for some reason?
+# should it be structured as input --> embed --> transf --> mlp --> output or should the mlp be encased in the transf?
+
+#TODO: IS THIS NECESSARY???
 ### prev: encoding labels (cell lines) from string -> int
 
 df.cell_line = categorical(df.cell_line) 
@@ -27,8 +40,6 @@ y = df.cell_line_encoded
 
 num_classes = length(levels(df.cell_line))
 input_size = size(X, 1)
-
-# y_oh = Float32.(Flux.onehotbatch(y, 1:num_classes)) # i don't think you have to one-hot encode them?
 
 ### building transformer section
 
@@ -102,7 +113,7 @@ end
 ### need to define as input --> encoder --> transf --> output i think??? so this is the full model i think
 
 struct Model
-    input_head::Flux.Chain
+    embedding::Flux.Embedding
     # pos encoder here
     transf::Flux.Chain
     output_head::Flux.Chain
@@ -118,7 +129,8 @@ function Model(;
     dropout_prob::Float64
     )
 
-    input_head = Flux.Chain(Flux.Dense(input_size => embed_size))
+    # input_head = Flux.Chain(Flux.Dense(input_size => embed_size))
+    embed = Flux.Embedding(input_size => embed_size)
     # pos_encoder = PositionalEncoding(embed_size, 1)
     transformer = Flux.Chain(
         [Transf(embed_size, hidden_size; n_heads, dropout_prob) 
@@ -130,7 +142,7 @@ function Model(;
         Flux.Dense(embed_size => n_classes)
         )
 
-    return Model(input_head, transformer, output_head)
+    return Model(embed, transformer, output_head)
 end
 
 Flux.@functor Model
@@ -235,3 +247,11 @@ for epoch in ProgressBar(1:n_epochs)
     push!(test_accuracies, test_acc)
 
 end
+
+### evaluation metrics
+
+# loss plot
+Plots.plot(1:n_epochs, train_losses, label="training loss", xlabel="epoch", ylabel="loss", 
+     title="training vs validation loss", lw=2)
+Plots.plot!(1:n_epochs, test_losses, label="test loss", lw=2)
+Plots.savefig("data/plots/transf_ranked_untrt/trainval_loss.png")

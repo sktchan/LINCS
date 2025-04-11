@@ -1,6 +1,6 @@
 << to keep track of changes made, prev. ideas, etc. >>
 
-apr 8, 2025 - flux.transf.jl
+apr 8, 2025 - flux_transf.jl
 this is what was used for original 2D input into mhsa (which doesn't work, needs (k, q, v) input)
 function (tf::Transf)(input::Float32Matrix2DType) # input is features (978) x batch
     sa_out = tf.mhsa(tf.norm_1(input)) # OG paper states norm after sa, but norm before sa is more common?
@@ -12,3 +12,44 @@ function (tf::Transf)(input::Float32Matrix2DType) # input is features (978) x ba
     return x
 end
 
+apr 11, 2025 - flux_transf.jl
+using a for loop and replacing a matrix of -1 rather than making a copy is much faster! 
+using the function below (commented parts) is a little easier to read, but the current impl. in the file is much more efficient.
+tmp: if we were to replace the -1s with not the gene names (Str) but with the ranking ints themselves
+function sort_gene(expr)
+    # data_ranked = Matrix{Int}(undef, size(expr))
+    data_ranked = fill(-1, size(expr))
+    # gs = Symbol.(gene_symbols)
+    n, m = size(expr)
+    p = Vector{Int}(undef, n)
+    # tmp = sortperm(expr[:, 1])
+
+    for j in 1:m
+        e = view(expr, :, j)
+        sortperm!(p, e, rev=true)
+        # data_ranked[!, j] = gs[tmp]
+
+        for i in 1:n
+            data_ranked[i, j] = p[i]
+        end
+    end
+    return data_ranked
+end
+
+GENES AS TOKENS gene-gene interactions (sequence length as len(genes))
+- each gene is a position in your sequence
+- each token's embedding contains information about that gene's ranking across samples
+- the sequence length equals the number of genes you're considering
+SAMPLES AS TOKENS sample-sample interactions (sequence length as len(samples))
+- each sample is a position in your sequence
+- each token's embedding contains the gene ranking information for that sample
+- the sequence length equals the number of samples
+TECHNICAL CONSIDERATIONS
+transformers struggle with very long sequences, so if we have many more genes than samples, using samples as tokens may be more computationally feasible
+self-attention complexity grows quadratically with sequence length
+which dimension has more examples to learn from?
+
+good option: Flux.MultiHeadAttention((64, 64, 64) => (64, 64) => 64, nheads=1), can incr nheads later
+- q, k, v input dim should all be the same if data type is the same or we aren't doing encoder-decoder
+- middle dimensions should also be the same unless we want to reduce computational complexity in the middle
+- output can also be the same unless we want to do ft compression or expansion

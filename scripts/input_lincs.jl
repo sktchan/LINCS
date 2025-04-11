@@ -10,7 +10,7 @@ wget https://s3.amazonaws.com/macchiato.clue.io/builds/LINCS2020/instinfo_beta.t
 =#
 
 ### load in lincs dataset (this is the one filtered for Lea's project)
-@time lincs_data = LincsProject.Lincs("data/", "level3_beta_all_n3026460x12328.gctx", "data/lincs_data.jld2")
+@time lincs_data = LincsProject.Lincs("data/lincs_loading_files/", "level3_beta_all_n3026460x12328.gctx", "data/lincs_data.jld2")
 
 #=
 struct Lincs
@@ -30,6 +30,10 @@ o = LincsProject.create_filter(lincs_data, Dict(
 # creating df of cell line x gene expression 
 filtered_lincs = lincs_data[o]
 filtered_expr = lincs_data.expr[:, o]
+filtered_data = Lincs(filtered_expr, lincs_data.gene, lincs_data.compound, filtered_lincs)
+jldsave("data/lincs_filtered_data.jld2"; filtered_data)
+@time i = load("data/lincs_filtered_data.jld2")["filtered_data"]
+
 df = DataFrame(transpose(filtered_expr), :auto)
 insertcols!(df, 1, :cell_line => filtered_lincs.cell_iname)
 col_names = ["cell_line"; lincs_data.gene.gene_symbol]
