@@ -1,16 +1,14 @@
 using LincsProject, DataFrames, CSV, Dates, JSON, StatsBase, JLD2
 using Flux, Random, OneHotArrays, CategoricalArrays, ProgressBars, CUDA, Statistics, Plots, CairoMakie, LinearAlgebra
-CUDA.device!(1)
+CUDA.device!(0)
 
-# @time df = CSV.read("data/all_cellline_geneexpr.csv", DataFrame) # trt and untrt
-# @time df = CSV.read("data/cellline_geneexpr.csv", DataFrame) # untrt only
 data = load("data/lincs_filtered_data.jld2")["filtered_data"] # using jld2 is way faster for loading/reading than csv
 
 ### tokenization
 
 function sort_gene(expr)
-    data_ranked = Matrix{Int}(undef, size(expr)) # faster than fill(-1, size(expr))
     n, m = size(expr)
+    data_ranked = Matrix{Int}(undef, size(expr)) # faster than fill(-1, size(expr))
     sorted_ind_col = Vector{Int}(undef, n)
     for j in 1:m
         unsorted_expr_col = view(expr, :, j)
@@ -23,27 +21,39 @@ function sort_gene(expr)
     return data_ranked
 end
 
+# TODO: DO I NEED TO NORMALIZE INDICES??? NO, RIGHT???
+
 @time ranked_data = sort_gene(data.expr) # lookup table of indices from highest rank to lowest rank gene
 
-### DONE HERE SO FAR IN REDOING TRANSF
-#TODO: HOW TO INPUT INTO FLUX.EMBEDDING() --> TRANSF --> OUTPUT?? DO WE NEED INPUT --> FLUX.EMBEDDING() FIRST? for some reason?
-# should it be structured as input --> embed --> transf --> mlp --> output or should the mlp be encased in the transf?
-
-#TODO: IS THIS NECESSARY???
 ### prev: encoding labels (cell lines) from string -> int
 
-df.cell_line = categorical(df.cell_line) 
-df.cell_line_encoded = levelcode.(df.cell_line)
+unique_cell_lines = unique(data.inst.cell_iname)
+label_dict = Dict(name => i for (i, name) in enumerate(unique_cell_lines))
+integer_labels = [label_dict[name] for name in data.inst.cell_iname]
 
-X = Float32.(Matrix(df_ranked[:, 2:end-1])') # flux requires format (features × samples)
-y = df.cell_line_encoded
+X = ranked_data # 978 x 100425
+y = integer_labels # 100425 x 1
 
-num_classes = length(levels(df.cell_line))
+num_classes = length(unique_cell_lines)
 input_size = size(X, 1)
+
+#######################################################################################################################################
+
+### positional encoder # TODO: ADD THIS PART IN 
+
+struct PosEncoder
+end
+
+function PosEncoder()
+end
+
+function (pe::PosEncoder)(x::Float32Matrix3DType)
+end
 
 ### building transformer section
 
 const Float32Matrix2DType = Union{Array{Float32}, CuArray{Float32, 2}} # so we can use GPU or CPU :D
+const Float32Matrix3DType = Union{Array{Float32, 3}, CuArray{Float32, 3}}
 
 struct Transf
     mhsa::Flux.MultiHeadAttention
@@ -54,19 +64,22 @@ struct Transf
 end
 
 function Transf(
-    embed_dim::Int64, 
-    hidden_dim::Int64; 
-    n_heads::Int64, 
+    embed_dim::Int, 
+    hidden_dim::Int; 
+    n_heads::Int, 
     dropout_prob::Float64
     )
 
-    mhsa = Flux.MultiHeadAttention(embed_dim, nheads=n_heads, dropout_prob=dropout_prob)
+    mhsa = Flux.MultiHeadAttention((embed_dim, embed_dim, embed_dim) => (embed_dim, embed_dim) => embed_dim, 
+                                    nheads=n_heads, 
+                                    dropout_prob=dropout_prob
+                                    )
     norm1 = Flux.LayerNorm(embed_dim)
     mlp = Flux.Chain(
         Flux.Dense(embed_dim => hidden_dim, gelu),
         Flux.Dropout(dropout_prob),
         Flux.Dense(hidden_dim => embed_dim)
-    )
+        )
     norm2 = Flux.LayerNorm(embed_dim)
     # dropout = Flux.Dropout(dropout_prob)
 
@@ -75,57 +88,26 @@ end
 
 Flux.@functor Transf
 
-function (tf::Transf)(input::Float32Matrix2DType) # input is features (978) x batch
-    features = size(input, 1)
-    batch = size(input, 2)
-    input_3d = reshape(input, features, 1, batch) # (features x 1 x batch) for mhsa input
-
-    normed = tf.norm_1(input_3d)
-    sa_out, _ = tf.mhsa(normed, normed, normed) # OG paper states norm after sa, but norm before sa is more common?
-
-    # FIXME: why is it outputting a 3D and 4D tensor?
-    # print("type: ", typeof(sa_out)) # output: type: Tuple{CuArray{Float32, 3, CUDA.DeviceMemory}, CuArray{Float32, 4, CUDA.DeviceMemory}}
-    # print("size of 1: ", size(sa_out[1])) # output: (128, 1, 32)
-    # print("size of 2: ", size(sa_out[2])) # output: (1, 1, 8, 32)
-
-    sa_out_2d = reshape(sa_out, features, batch) # (features x batch) for mlp input
-    x = input + sa_out_2d
-    mlp_out = tf.mlp(tf.norm_2(x))
-    x = x + mlp_out
-
-    return x
+function (tf::Transf)(input::Float32Matrix2DType) # input is (embed_dim x n_genes x batch)
+    # TODO: ADD THIS PART IN 
 end
 
-### encoding ?? not sure if this is needed...
-
-# struct PosEnc
-#     pe::Array{Float32}
-# end
-
-# function gen_posenc(embed_dim::Int, max_len::Int) # actually idk how to implement this really
-# end
-
-# encoder = Flux.Chain(
-#     Dense(input_size => embed_dim),
-#     Dropout(0.1)
-#     )
-
-### need to define as input --> encoder --> transf --> output i think??? so this is the full model i think
+### full model as embedding --> transf --> output
 
 struct Model
     embedding::Flux.Embedding
-    # pos encoder here
+    # posencoder::PositionalEncoding
     transf::Flux.Chain
-    output_head::Flux.Chain
+    output_head::Flux.Chain # TODO: SHOULD I BE USING POOLING INSTEAD???
 end
 
 function Model(;
-    input_size::Int64,
-    embed_size::Int64,
-    n_layers::Int64,
-    n_classes::Int64,
-    n_heads::Int64,
-    hidden_size::Int64,
+    input_size::Int,
+    embed_size::Int,
+    n_layers::Int,
+    n_classes::Int,
+    n_heads::Int,
+    hidden_size::Int,
     dropout_prob::Float64
     )
 
@@ -147,16 +129,15 @@ end
 
 Flux.@functor Model
 
-function (model::Model)(x::Float32Matrix2DType)
-    x = model.input_head(x)
-    # x = model.pos_encoder(x)
-    x = model.transf(x)
-    x = model.output_head(x)
+function (model::Model)(x::Float32Matrix2DType) # x is a matrix of gene indices: n_genes × batch_size
+    # TODO: ADD THIS PART IN 
 end
+
+#######################################################################################################################################
 
 ### splitting data
 
-function split_data(X::Matrix{Float32}, y::Vector{Int64}, test_ratio::Float64)
+function split_data(X::Matrix{Int64}, y::Vector{Int64}, test_ratio::Float64)
     n = size(X, 2)
     indices = shuffle(1:n) 
 
@@ -176,6 +157,7 @@ X_train, y_train, X_test, y_test = split_data(X, y, 0.2)
 
 ### training
 
+n_genes, n_samples = size(X)
 batch_size = 32
 n_epochs = 10
 embed_dim = 128
@@ -196,8 +178,7 @@ model = Model(
 ) |> gpu
 
 opt = Flux.setup(Adam(lr), model)
-# TODO: crossentropy vs. mae...?
-function loss(model, x, y) # TODO: should i be converting to one-hot in preprocessing instead of here?
+function loss(model, x, y)
     logits = model(x)  # (num_classes, batch_size)
     y_oh = Flux.onehotbatch(y, 1:num_classes)  # convert to one-hot since target labels are of (batch_size,) to match logits
     return Flux.logitcrossentropy(logits, y_oh)
