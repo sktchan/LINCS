@@ -52,6 +52,7 @@ end
 
 ### building transformer section
 
+const IntMatrix2DType = Union{Array{Int}, CuArray{Int, 2}}
 const Float32Matrix2DType = Union{Array{Float32}, CuArray{Float32, 2}} # so we can use GPU or CPU :D
 const Float32Matrix3DType = Union{Array{Float32, 3}, CuArray{Float32, 3}}
 
@@ -88,8 +89,30 @@ end
 
 Flux.@functor Transf
 
-function (tf::Transf)(input::Float32Matrix2DType) # input is (embed_dim x n_genes x batch)
-    # TODO: ADD THIS PART IN 
+## if input is 2D (embed_dim x batch_size), use this (although idt that's how a transf works)
+# function (tf::Transf)(input::Float32Matrix2DType)
+#     norm_out1 = tf.norm_1(input)
+#     att_out = tf.mhsa(norm_out1, norm_out1, norm_out1)
+#     res_out = input + att_out
+#     norm_out2 = tf.norm_2(res_out)
+#     mlp_out = res_out + tf.mlp(norm_out2)
+#     return mlp_out
+# end
+
+function (tf::Transf)(input::Float32Matrix3DType) # input shape: embed_dim × seq_len × batch_size
+    norm_out1 = tf.norm_1(input)
+    att_full = tf.mhsa(norm_out1, norm_out1, norm_out1)
+    att_out = att_full[1]
+    res_out = input + att_out
+    norm_out2 = tf.norm_2(res_out)
+
+    embed_dim, seq_len, batch_size = size(norm_out2)
+    reshaped = reshape(norm_out2, embed_dim, seq_len * batch_size) # dense layers expect 2D inputs
+    mlp_out = tf.mlp(reshaped)
+    mlp_out_reshaped = reshape(mlp_out, embed_dim, seq_len, batch_size)
+    
+    output = res_out + mlp_out_reshaped
+    return output
 end
 
 ### full model as embedding --> transf --> output
@@ -129,8 +152,36 @@ end
 
 Flux.@functor Model
 
-function (model::Model)(x::Float32Matrix2DType) # x is a matrix of gene indices: n_genes × batch_size
-    # TODO: ADD THIS PART IN 
+# TODO: idk how this part works 
+# function (model::Model)(x::IntMatrix2DType)  # x: n_genes × batch_size
+#     n_genes, batch_size = size(x)
+#     embedded = zeros(Float32, size(model.embedding.weight, 1), n_genes, batch_size)
+#     for i in 1:n_genes
+#         gene_indices = x[i, :]                          # 1 × batch_size
+#         embedded_genes = model.embedding(gene_indices)  # embed_dim × batch_size
+#         embedded[:, i, :] = embedded_genes
+#     end
+
+#     transformed = model.transf(embedded) # embed_dim × n_genes × batch_size
+#     pooled = mean(transformed, dims=2) # embed_dim × 1 × batch_size
+#     pooled = dropdims(pooled, dims=2)  # embed_dim × batch_size
+#     logits = model.output_head(pooled) # num_classes × batch_size
+
+#     return logits
+# end
+
+# TODO: idk how this part works
+function (model::Model)(genes::IntMatrix2DType)
+    local embedded::Float32Matrix3DType 
+    embedded = similar(model.embedding.weight, (size(model.embedding.weight, 1), size(genes, 1), size(genes, 2)))
+    NNlib.gather!(embedded, model.embedding.weight, genes)
+    # (On CPU, this effectively indexes the embedding matrix; on GPU, it uses a kernel for efficiency)
+    
+    # Pass through the transformer stack (sequence dimension is the 2nd dim of `embedded`)
+    local x::Float32Matrix3DType = model.transf(embedded)
+    pooled = dropdims(mean(x, dims=2), dims=2)  # embed_dim x batch_size
+    logits = model.output(pooled) # num_classes × batch_size
+    return logits
 end
 
 #######################################################################################################################################
