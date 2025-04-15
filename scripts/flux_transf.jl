@@ -1,8 +1,9 @@
 using LincsProject, DataFrames, CSV, Dates, JSON, StatsBase, JLD2
 using Flux, Random, OneHotArrays, CategoricalArrays, ProgressBars, CUDA, Statistics, Plots, CairoMakie, LinearAlgebra
-CUDA.device!(0)
+CUDA.device!(1)
 
-data = load("data/lincs_filtered_data.jld2")["filtered_data"] # using jld2 is way faster for loading/reading than csv
+# using jld2 is way faster for loading/reading than csv
+data = load("data/lincs_filtered_data.jld2")["filtered_data"] # untrt only
 
 ### tokenization
 
@@ -21,8 +22,6 @@ function sort_gene(expr)
     return data_ranked
 end
 
-# TODO: DO I NEED TO NORMALIZE INDICES??? NO, RIGHT???
-
 @time ranked_data = sort_gene(data.expr) # lookup table of indices from highest rank to lowest rank gene
 
 ### prev: encoding labels (cell lines) from string -> int
@@ -31,37 +30,55 @@ unique_cell_lines = unique(data.inst.cell_iname)
 label_dict = Dict(name => i for (i, name) in enumerate(unique_cell_lines))
 integer_labels = [label_dict[name] for name in data.inst.cell_iname]
 
+num_classes = length(unique_cell_lines)
+input_size = size(ranked_data, 1)
+
 X = ranked_data # 978 x 100425
 y = integer_labels # 100425 x 1
 
-num_classes = length(unique_cell_lines)
-input_size = size(X, 1)
+# TODO: fix all variable naming, they overlap and are super confusing
 
 #######################################################################################################################################
 
-### positional encoder # TODO: ADD THIS PART IN 
+# so we can use GPU or CPU :D
+const IntMatrix2DType = Union{Array{Int}, CuArray{Int, 2}}
+const Float32Matrix2DType = Union{Array{Float32}, CuArray{Float32, 2}}
+const Float32Matrix3DType = Union{Array{Float32, 3}, CuArray{Float32, 3}}
 
-struct PosEncoder
+### positional encoder # TODO: do more research into this part
+
+struct PosEnc
+    pe::CuArray{Float32,2}
 end
 
-function PosEncoder()
+function PosEnc(embed_dim::Int, max_len::Int) # max_len is usually maximum length of sequence but here it is just len(genes)
+    pe = Matrix{Float32}(undef, embed_dim, max_len)
+    for pos in 1:max_len, i in 1:embed_dim
+        angle = pos / (10000^(2*(div(i-1,2))/embed_dim))
+        if mod(i, 2) == 1
+            pe[i,pos] = sin(angle) # odd indices
+        else
+            pe[i,pos] = cos(angle) # even indices
+        end
+    end
+    return PosEnc(cu(pe))
 end
 
-function (pe::PosEncoder)(x::Float32Matrix3DType)
+Flux.@functor PosEnc
+
+function (p::PosEnc)(x::Float32Matrix3DType)
+    seq_len = size(x,2)
+    return x .+ p.pe[:,1:seq_len] # adds positional encoding to input embeddings
 end
 
 ### building transformer section
 
-const IntMatrix2DType = Union{Array{Int}, CuArray{Int, 2}}
-const Float32Matrix2DType = Union{Array{Float32}, CuArray{Float32, 2}} # so we can use GPU or CPU :D
-const Float32Matrix3DType = Union{Array{Float32, 3}, CuArray{Float32, 3}}
-
 struct Transf
     mhsa::Flux.MultiHeadAttention
-    norm_1::Flux.LayerNorm
+    att_drop::Flux.Dropout
+    norm_1::Flux.LayerNorm # this is the normalization aspect
     mlp::Flux.Chain
     norm_2::Flux.LayerNorm
-    # dropout::Flux.Dropout
 end
 
 function Transf(
@@ -75,34 +92,26 @@ function Transf(
                                     nheads=n_heads, 
                                     dropout_prob=dropout_prob
                                     )
+    att_drop = Flux.Dropout(drop_prob)
     norm1 = Flux.LayerNorm(embed_dim)
     mlp = Flux.Chain(
         Flux.Dense(embed_dim => hidden_dim, gelu),
         Flux.Dropout(dropout_prob),
-        Flux.Dense(hidden_dim => embed_dim)
+        Flux.Dense(hidden_dim => embed_dim),
+        Flux.Dropout(dropout_prob)
         )
     norm2 = Flux.LayerNorm(embed_dim)
-    # dropout = Flux.Dropout(dropout_prob)
 
-    return Transf(mhsa, norm1, mlp, norm2)
+    return Transf(mhsa, att_drop, norm1, mlp, norm2)
 end
 
 Flux.@functor Transf
-
-## if input is 2D (embed_dim x batch_size), use this (although idt that's how a transf works)
-# function (tf::Transf)(input::Float32Matrix2DType)
-#     norm_out1 = tf.norm_1(input)
-#     att_out = tf.mhsa(norm_out1, norm_out1, norm_out1)
-#     res_out = input + att_out
-#     norm_out2 = tf.norm_2(res_out)
-#     mlp_out = res_out + tf.mlp(norm_out2)
-#     return mlp_out
-# end
 
 function (tf::Transf)(input::Float32Matrix3DType) # input shape: embed_dim × seq_len × batch_size
     norm_out1 = tf.norm_1(input)
     att_full = tf.mhsa(norm_out1, norm_out1, norm_out1)
     att_out = att_full[1]
+    att_out = tf.att_drop(att_out)
     res_out = input + att_out
     norm_out2 = tf.norm_2(res_out)
 
@@ -115,13 +124,14 @@ function (tf::Transf)(input::Float32Matrix3DType) # input shape: embed_dim × se
     return output
 end
 
-### full model as embedding --> transf --> output
+### full model as << ranked data --> token embedding --> position embedding --> transformer --> output >>
 
 struct Model
     embedding::Flux.Embedding
-    # posencoder::PositionalEncoding
+    posencoder::PosEnc
+    pos_drop::Flux.Dropout
     transf::Flux.Chain
-    output_head::Flux.Chain # TODO: SHOULD I BE USING POOLING INSTEAD???
+    output_head::Flux.Chain # default classifier
 end
 
 function Model(;
@@ -136,10 +146,11 @@ function Model(;
 
     # input_head = Flux.Chain(Flux.Dense(input_size => embed_size))
     embed = Flux.Embedding(input_size => embed_size)
-    # pos_encoder = PositionalEncoding(embed_size, 1)
+    pos_encoder = PosEnc(embed_size, input_size)
+    pos_drop = Flux.Dropout(dropout_prob)
     transformer = Flux.Chain(
         [Transf(embed_size, hidden_size; n_heads, dropout_prob) 
-        for _ in 1:n_layers]
+        for _ in 1:n_layers]...
         )
     output_head = Flux.Chain(
         Flux.Dense(embed_size => embed_size, gelu),
@@ -147,40 +158,18 @@ function Model(;
         Flux.Dense(embed_size => n_classes)
         )
 
-    return Model(embed, transformer, output_head)
+    return Model(embed, pos_encoder, pos_drop, transformer, output_head)
 end
 
 Flux.@functor Model
 
-# TODO: idk how this part works 
-# function (model::Model)(x::IntMatrix2DType)  # x: n_genes × batch_size
-#     n_genes, batch_size = size(x)
-#     embedded = zeros(Float32, size(model.embedding.weight, 1), n_genes, batch_size)
-#     for i in 1:n_genes
-#         gene_indices = x[i, :]                          # 1 × batch_size
-#         embedded_genes = model.embedding(gene_indices)  # embed_dim × batch_size
-#         embedded[:, i, :] = embedded_genes
-#     end
-
-#     transformed = model.transf(embedded) # embed_dim × n_genes × batch_size
-#     pooled = mean(transformed, dims=2) # embed_dim × 1 × batch_size
-#     pooled = dropdims(pooled, dims=2)  # embed_dim × batch_size
-#     logits = model.output_head(pooled) # num_classes × batch_size
-
-#     return logits
-# end
-
-# TODO: idk how this part works
-function (model::Model)(genes::IntMatrix2DType)
-    local embedded::Float32Matrix3DType 
-    embedded = similar(model.embedding.weight, (size(model.embedding.weight, 1), size(genes, 1), size(genes, 2)))
-    NNlib.gather!(embedded, model.embedding.weight, genes)
-    # (On CPU, this effectively indexes the embedding matrix; on GPU, it uses a kernel for efficiency)
-    
-    # Pass through the transformer stack (sequence dimension is the 2nd dim of `embedded`)
-    local x::Float32Matrix3DType = model.transf(embedded)
-    pooled = dropdims(mean(x, dims=2), dims=2)  # embed_dim x batch_size
-    logits = model.output(pooled) # num_classes × batch_size
+function (model::Model)(x::IntMatrix2DType)
+    embedded = model.embedding(x)
+    encoded = model.posencoder(embedded)
+    encoded = model.pos_drop(encoded)
+    transformed = model.transf(encoded)
+    pooled = dropdims(mean(transformed; dims=2), dims=2)
+    logits = model.output_head(pooled)
     return logits
 end
 
@@ -209,12 +198,12 @@ X_train, y_train, X_test, y_test = split_data(X, y, 0.2)
 ### training
 
 n_genes, n_samples = size(X)
-batch_size = 32
-n_epochs = 10
-embed_dim = 128
-hidden_dim = 256
-n_heads = 8
-n_layers = 3
+batch_size = 8
+n_epochs = 1 # TODO: currently at 6-7mins per epoch
+embed_dim = 64
+hidden_dim = 128
+n_heads = 4
+n_layers = 1
 drop_prob = 0.1
 lr = 0.001
 
