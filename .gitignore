@@ -1,4 +1,5 @@
 # ignore all data files, these can be regenerated
 data/
+plots/
 practice/
-frogs_src/ 
+frogs_src/

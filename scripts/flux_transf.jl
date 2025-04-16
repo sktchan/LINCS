@@ -1,9 +1,14 @@
+# TODO: look into pos encoding
+# TODO: currently at 6-7mins per epoch on untrt --> is this ok? cannot run on 128 batchsize...?
+# TODO: currently at 2h9m per epoch on trt+untrt --> defos not ok... how to opt?
+
 using LincsProject, DataFrames, CSV, Dates, JSON, StatsBase, JLD2
 using Flux, Random, OneHotArrays, CategoricalArrays, ProgressBars, CUDA, Statistics, Plots, CairoMakie, LinearAlgebra
 CUDA.device!(1)
 
 # using jld2 is way faster for loading/reading than csv
-data = load("data/lincs_filtered_data.jld2")["filtered_data"] # untrt only
+# data = load("data/lincs_untrt_data.jld2")["filtered_data"] # untrt only
+data = load("data/lincs_trt_untrt_data.jld2")["filtered_data"] # trt and untrt data
 
 ### tokenization
 
@@ -30,13 +35,11 @@ unique_cell_lines = unique(data.inst.cell_iname)
 label_dict = Dict(name => i for (i, name) in enumerate(unique_cell_lines))
 integer_labels = [label_dict[name] for name in data.inst.cell_iname]
 
-num_classes = length(unique_cell_lines)
-input_size = size(ranked_data, 1)
+n_classes = length(unique_cell_lines)
+n_features = size(ranked_data, 1)
 
 X = ranked_data # 978 x 100425
 y = integer_labels # 100425 x 1
-
-# TODO: fix all variable naming, they overlap and are super confusing
 
 #######################################################################################################################################
 
@@ -45,40 +48,40 @@ const IntMatrix2DType = Union{Array{Int}, CuArray{Int, 2}}
 const Float32Matrix2DType = Union{Array{Float32}, CuArray{Float32, 2}}
 const Float32Matrix3DType = Union{Array{Float32, 3}, CuArray{Float32, 3}}
 
-### positional encoder # TODO: do more research into this part
+### positional encoder
 
 struct PosEnc
-    pe::CuArray{Float32,2}
+    pe_matrix::CuArray{Float32,2}
 end
 
 function PosEnc(embed_dim::Int, max_len::Int) # max_len is usually maximum length of sequence but here it is just len(genes)
-    pe = Matrix{Float32}(undef, embed_dim, max_len)
+    pe_matrix = Matrix{Float32}(undef, embed_dim, max_len)
     for pos in 1:max_len, i in 1:embed_dim
         angle = pos / (10000^(2*(div(i-1,2))/embed_dim))
         if mod(i, 2) == 1
-            pe[i,pos] = sin(angle) # odd indices
+            pe_matrix[i,pos] = sin(angle) # odd indices
         else
-            pe[i,pos] = cos(angle) # even indices
+            pe_matrix[i,pos] = cos(angle) # even indices
         end
     end
-    return PosEnc(cu(pe))
+    return PosEnc(cu(pe_matrix))
 end
 
 Flux.@functor PosEnc
 
-function (p::PosEnc)(x::Float32Matrix3DType)
-    seq_len = size(x,2)
-    return x .+ p.pe[:,1:seq_len] # adds positional encoding to input embeddings
+function (pe::PosEnc)(input::Float32Matrix3DType)
+    seq_len = size(input,2)
+    return input .+ pe.pe_matrix[:,1:seq_len] # adds positional encoding to input embeddings
 end
 
 ### building transformer section
 
 struct Transf
-    mhsa::Flux.MultiHeadAttention
-    att_drop::Flux.Dropout
-    norm_1::Flux.LayerNorm # this is the normalization aspect
+    mha::Flux.MultiHeadAttention
+    att_dropout::Flux.Dropout
+    att_norm::Flux.LayerNorm # this is the normalization aspect
     mlp::Flux.Chain
-    norm_2::Flux.LayerNorm
+    mlp_norm::Flux.LayerNorm
 end
 
 function Transf(
@@ -88,89 +91,95 @@ function Transf(
     dropout_prob::Float64
     )
 
-    mhsa = Flux.MultiHeadAttention((embed_dim, embed_dim, embed_dim) => (embed_dim, embed_dim) => embed_dim, 
+    mha = Flux.MultiHeadAttention((embed_dim, embed_dim, embed_dim) => (embed_dim, embed_dim) => embed_dim, 
                                     nheads=n_heads, 
                                     dropout_prob=dropout_prob
                                     )
-    att_drop = Flux.Dropout(drop_prob)
-    norm1 = Flux.LayerNorm(embed_dim)
+    
+    att_dropout = Flux.Dropout(drop_prob)
+    
+    att_norm = Flux.LayerNorm(embed_dim)
+    
     mlp = Flux.Chain(
         Flux.Dense(embed_dim => hidden_dim, gelu),
         Flux.Dropout(dropout_prob),
         Flux.Dense(hidden_dim => embed_dim),
         Flux.Dropout(dropout_prob)
         )
-    norm2 = Flux.LayerNorm(embed_dim)
+    mlp_norm = Flux.LayerNorm(embed_dim)
 
-    return Transf(mhsa, att_drop, norm1, mlp, norm2)
+    return Transf(mha, att_dropout, att_norm, mlp, mlp_norm)
 end
 
 Flux.@functor Transf
 
 function (tf::Transf)(input::Float32Matrix3DType) # input shape: embed_dim × seq_len × batch_size
-    norm_out1 = tf.norm_1(input)
-    att_full = tf.mhsa(norm_out1, norm_out1, norm_out1)
-    att_out = att_full[1]
-    att_out = tf.att_drop(att_out)
-    res_out = input + att_out
-    norm_out2 = tf.norm_2(res_out)
+    normed = tf.att_norm(input)
+    atted = tf.mha(normed, normed, normed)[1] # outputs a tuple (a, b)
+    att_dropped = tf.att_dropout(atted)
+    residualed = input + att_dropped
+    res_normed = tf.mlp_norm(residualed)
 
-    embed_dim, seq_len, batch_size = size(norm_out2)
-    reshaped = reshape(norm_out2, embed_dim, seq_len * batch_size) # dense layers expect 2D inputs
+    embed_dim, seq_len, batch_size = size(res_normed)
+    reshaped = reshape(res_normed, embed_dim, seq_len * batch_size) # dense layers expect 2D inputs
     mlp_out = tf.mlp(reshaped)
     mlp_out_reshaped = reshape(mlp_out, embed_dim, seq_len, batch_size)
     
-    output = res_out + mlp_out_reshaped
-    return output
+    tf_output = residualed + mlp_out_reshaped
+    return tf_output
 end
 
-### full model as << ranked data --> token embedding --> position embedding --> transformer --> output >>
+### full model as << ranked data --> token embedding --> position embedding --> transformer --> classifier head >>
 
 struct Model
     embedding::Flux.Embedding
-    posencoder::PosEnc
-    pos_drop::Flux.Dropout
-    transf::Flux.Chain
-    output_head::Flux.Chain # default classifier
+    pos_encoder::PosEnc
+    pos_dropout::Flux.Dropout
+    transformer::Flux.Chain
+    classifier::Flux.Chain
 end
 
 function Model(;
     input_size::Int,
-    embed_size::Int,
+    embed_dim::Int,
     n_layers::Int,
     n_classes::Int,
     n_heads::Int,
-    hidden_size::Int,
+    hidden_dim::Int,
     dropout_prob::Float64
     )
 
-    # input_head = Flux.Chain(Flux.Dense(input_size => embed_size))
-    embed = Flux.Embedding(input_size => embed_size)
-    pos_encoder = PosEnc(embed_size, input_size)
-    pos_drop = Flux.Dropout(dropout_prob)
+    # input_head = Flux.Chain(Flux.Dense(input_size => embed_dim))
+
+    embedding = Flux.Embedding(input_size => embed_dim)
+
+    pos_encoder = PosEnc(embed_dim, input_size)
+
+    pos_dropout = Flux.Dropout(dropout_prob)
+
     transformer = Flux.Chain(
-        [Transf(embed_size, hidden_size; n_heads, dropout_prob) 
-        for _ in 1:n_layers]...
-        )
-    output_head = Flux.Chain(
-        Flux.Dense(embed_size => embed_size, gelu),
-        Flux.LayerNorm(embed_size),
-        Flux.Dense(embed_size => n_classes)
+        [Transf(embed_dim, hidden_dim; n_heads, dropout_prob) for _ in 1:n_layers]...
         )
 
-    return Model(embed, pos_encoder, pos_drop, transformer, output_head)
+    classifier = Flux.Chain(
+        Flux.Dense(embed_dim => embed_dim, gelu),
+        Flux.LayerNorm(embed_dim),
+        Flux.Dense(embed_dim => n_classes)
+        )
+
+    return Model(embedding, pos_encoder, pos_dropout, transformer, classifier)
 end
 
 Flux.@functor Model
 
-function (model::Model)(x::IntMatrix2DType)
-    embedded = model.embedding(x)
-    encoded = model.posencoder(embedded)
-    encoded = model.pos_drop(encoded)
-    transformed = model.transf(encoded)
+function (model::Model)(input::IntMatrix2DType)
+    embedded = model.embedding(input)
+    encoded = model.pos_encoder(embedded)
+    encoded_dropped = model.pos_dropout(encoded)
+    transformed = model.transformer(encoded_dropped)
     pooled = dropdims(mean(transformed; dims=2), dims=2)
-    logits = model.output_head(pooled)
-    return logits
+    logits_output = model.classifier(pooled)
+    return logits_output
 end
 
 #######################################################################################################################################
@@ -198,29 +207,29 @@ X_train, y_train, X_test, y_test = split_data(X, y, 0.2)
 ### training
 
 n_genes, n_samples = size(X)
-batch_size = 8
-n_epochs = 1 # TODO: currently at 6-7mins per epoch
-embed_dim = 64
-hidden_dim = 128
+batch_size = 64
+n_epochs = 5
+embed_dim = 32
+hidden_dim = 64
 n_heads = 4
 n_layers = 1
 drop_prob = 0.1
 lr = 0.001
 
 model = Model(
-    input_size=input_size,
-    embed_size=embed_dim,
+    input_size=n_features,
+    embed_dim=embed_dim,
     n_layers=n_layers,
-    n_classes=num_classes,
+    n_classes=n_classes,
     n_heads=n_heads,
-    hidden_size=hidden_dim,
+    hidden_dim=hidden_dim,
     dropout_prob=drop_prob
 ) |> gpu
 
 opt = Flux.setup(Adam(lr), model)
 function loss(model, x, y)
-    logits = model(x)  # (num_classes, batch_size)
-    y_oh = Flux.onehotbatch(y, 1:num_classes)  # convert to one-hot since target labels are of (batch_size,) to match logits
+    logits = model(x)  # (n_classes, batch_size)
+    y_oh = Flux.onehotbatch(y, 1:n_classes)  # convert to one-hot since target labels are of (batch_size,) to match logits
     return Flux.logitcrossentropy(logits, y_oh)
 end
 # loss = logitcrossentropy(model(x), y) + α * sum(p -> sum(abs2, p), params(model)) # L2 regularization
@@ -275,4 +284,4 @@ end
 Plots.plot(1:n_epochs, train_losses, label="training loss", xlabel="epoch", ylabel="loss", 
      title="training vs validation loss", lw=2)
 Plots.plot!(1:n_epochs, test_losses, label="test loss", lw=2)
-Plots.savefig("data/plots/transf_ranked_untrt/trainval_loss.png")
+Plots.savefig("plots/trt_and_untrt/transformer/trainval_loss.png")
