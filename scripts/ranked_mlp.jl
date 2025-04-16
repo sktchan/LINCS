@@ -2,7 +2,8 @@ using LincsProject, DataFrames, CSV, Dates, JSON, StatsBase, JLD2
 using Flux, Random, OneHotArrays, CategoricalArrays, ProgressBars, CUDA, Statistics, Plots, CairoMakie, LinearAlgebra
 CUDA.device!(0)
 
-data = load("data/lincs_trt_untrt_data.jld2")["filtered_data"] # trt and untrt data
+data = load("data/lincs_untrt_data.jld2")["filtered_data"] 
+# data = load("data/lincs_trt_untrt_data.jld2")["filtered_data"] # trt and untrt data
 
 ### ranking encodings across columns
 
@@ -60,13 +61,13 @@ model = Chain(
     Dense(128, n_classes; init=Flux.glorot_uniform)
 ) |> gpu
 
-n_epochs = 50
+n_epochs = 100
 n_batches = 128
 loss(model, x, y) = Flux.logitcrossentropy(model(x), y)
 opt = Flux.setup(Adam(0.0001), model)
 
 train_data = Flux.DataLoader((X_train, y_train), batchsize=n_batches, shuffle=true)
-val_data = Flux.DataLoader((X_val, y_val), batchsize=n_batches, shuffle=true)
+val_data = Flux.DataLoader((X_val, y_val), batchsize=n_batches)
 test_data = Flux.DataLoader((X_test, y_test), batchsize=n_batches, shuffle=true) 
 
 train_losses = Float32[] 
@@ -107,7 +108,7 @@ end
 Plots.plot(1:n_epochs, train_losses, label="training loss", xlabel="epoch", ylabel="loss", 
      title="training vs validation loss", lw=2)
 Plots.plot!(1:n_epochs, val_losses, label="validation loss", lw=2)
-Plots.savefig("plots/trt_and_untrt/ranked_mlp/trainval_loss.png")
+Plots.savefig("plots/untrt/ranked_mlp/trainval_loss.png")
 
 # accuracy
 X_test_gpu = gpu(X_test)

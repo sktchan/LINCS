@@ -95,7 +95,7 @@ function Transf(
                                     nheads=n_heads, 
                                     dropout_prob=dropout_prob
                                     )
-    
+
     att_dropout = Flux.Dropout(drop_prob)
     
     att_norm = Flux.LayerNorm(embed_dim)
@@ -285,3 +285,6 @@ Plots.plot(1:n_epochs, train_losses, label="training loss", xlabel="epoch", ylab
      title="training vs validation loss", lw=2)
 Plots.plot!(1:n_epochs, test_losses, label="test loss", lw=2)
 Plots.savefig("plots/trt_and_untrt/transformer/trainval_loss.png")
+
+df = DataFrame(test_accuracies, :auto)
+CSV.write("test_accuracies.csv", df)

@@ -18,11 +18,11 @@ X = data.expr # 978 x 1412595
 y = integer_labels # 1412595 x 1
 
 # normalization
-# X_mean = mean(X, dims=2)
-# X_std  = std(X,  dims=2)
+X_mean = mean(X, dims=2)
+X_std  = std(X,  dims=2)
 
-# X .-= X_mean
-# X ./= X_std
+X .-= X_mean
+X ./= X_std
 
 y_oh = Flux.onehotbatch(y, 1:n_classes)
 
@@ -64,10 +64,10 @@ model = Chain(
 n_epochs = 50
 n_batches = 128
 loss(model, x, y) = Flux.logitcrossentropy(model(x), y)
-opt = Flux.setup(Adam(0.001), model)
+opt = Flux.setup(Adam(0.0005), model)
 
 train_data = Flux.DataLoader((X_train, y_train), batchsize=n_batches, shuffle=true)
-val_data = Flux.DataLoader((X_val, y_val), batchsize=n_batches, shuffle=true)
+val_data = Flux.DataLoader((X_val, y_val), batchsize=n_batches)
 # test_data = Flux.DataLoader((X_test, y_test), batchsize=n_batches, shuffle=true) 
 
 train_losses = Float32[] 
