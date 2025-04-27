@@ -5,7 +5,7 @@ using LincsProject, DataFrames, CSV, Dates, JSON, StatsBase, JLD2
 using Flux, Random, OneHotArrays, CategoricalArrays, ProgressBars, CUDA, Statistics, Plots, CairoMakie, LinearAlgebra
 CUDA.device!(0)
 
-data = load("data/lincs_trt_untrt_data.jld2")["filtered_data"]
+data = load("data/lincs_untrt_data.jld2")["filtered_data"]
 
 unique_cell_lines = unique(data.inst.cell_iname)
 label_dict = Dict(name => i for (i, name) in enumerate(unique_cell_lines))
@@ -16,6 +16,12 @@ n_features = size(data.expr, 1)
 
 X = data.expr # 978 x 1412595
 y = integer_labels # 1412595 x 1
+
+# partial_X = X[:, 1:25106]
+# partial_y = y[1:25106]
+
+# jldsave("X_data.jld2"; X = partial_X)
+# jldsave("y_data.jld2", y = partial_y)
 
 # normalization
 X_mean = mean(X, dims=2)
@@ -45,6 +51,7 @@ function split_data(X, y; val_ratio=0.2, test_ratio=0.1)
 end
 
 X_train, y_train, X_val, y_val, X_test, y_test = split_data(X, y_oh)
+# tmp = copy(X_train)
 
 ### training
 
@@ -61,13 +68,13 @@ model = Chain(
     Dense(128, n_classes; init=Flux.glorot_uniform)
 ) |> gpu
 
-n_epochs = 50
-n_batches = 128
+n_epochs = 100
+n_batches = 4096
 loss(model, x, y) = Flux.logitcrossentropy(model(x), y)
 opt = Flux.setup(Adam(0.0005), model)
 
-train_data = Flux.DataLoader((X_train, y_train), batchsize=n_batches, shuffle=true)
-val_data = Flux.DataLoader((X_val, y_val), batchsize=n_batches)
+# train_data = Flux.DataLoader((X_train, y_train), batchsize=n_batches, shuffle=true)
+# val_data = Flux.DataLoader((X_val, y_val), batchsize=n_batches)
 # test_data = Flux.DataLoader((X_test, y_test), batchsize=n_batches, shuffle=true) 
 
 train_losses = Float32[] 
@@ -76,30 +83,39 @@ val_losses = Float32[]
 # @code_warntype f(x) will show you where the type instability is
 
 for epoch in ProgressBar(1:n_epochs)
-    Flux.trainmode!(model)
-    epoch_losses = Float64[]
+
+        # Flux.trainmode!(model)
+        epoch_losses = Float64[]
     
-    for (x, y) in train_data
-        x_gpu, y_gpu = gpu(x), gpu(y)
-        loss_val, grads = Flux.withgradient(model) do m
-            # loss(model, x_gpu, y_gpu)
-            Flux.logitcrossentropy(m(x_gpu), y_gpu)
+        for b in 0:10
+            bp = b + 1
+            x_gpu, y_gpu = gpu(X_train[:, b*n_batches+1:bp*n_batches+1]), gpu(y_train[:, b*n_batches+1:bp*n_batches+1])
+            loss_val, grads = Flux.withgradient(model) do m
+                # loss(model, x_gpu, y_gpu)
+                Flux.logitcrossentropy(m(x_gpu), y_gpu)
+            end
+            loss_val2 = Flux.logitcrossentropy(model(x_gpu), y_gpu)
+            println("$loss_val $loss_val2")
+            
+            Flux.update!(opt, model, grads[1])
+            loss_val = Flux.logitcrossentropy(model(x_gpu), y_gpu)
+            push!(epoch_losses, loss_val)
+            break
         end
-        Flux.update!(opt, model, grads[1])
-        push!(epoch_losses, loss_val)
-    end
-    push!(train_losses, mean(epoch_losses))
-    
-    Flux.testmode!(model)
+        push!(train_losses, mean(epoch_losses))
+
+
+    # Flux.testmode!(model)
     val_epoch_losses = Float64[]
     
-    for (x, y) in val_data
-        x_gpu, y_gpu = gpu(x), gpu(y)
+    for b in 0:10
+        bp = b + 1
+        x_gpu, y_gpu = gpu(X_val[:, b*n_batches+1:bp*n_batches+1]), gpu(y_val[:, b*n_batches+1:bp*n_batches+1])
         # val_loss = loss(model, x_gpu, y_gpu)
         val_loss = Flux.logitcrossentropy(model(x_gpu), y_gpu)
         push!(val_epoch_losses, val_loss)
+        break
     end
-    
     push!(val_losses, mean(val_epoch_losses))
 end
 

@@ -4,7 +4,7 @@
 
 using LincsProject, DataFrames, CSV, Dates, JSON, StatsBase, JLD2
 using Flux, Random, OneHotArrays, CategoricalArrays, ProgressBars, CUDA, Statistics, Plots, CairoMakie, LinearAlgebra
-CUDA.device!(1)
+CUDA.device!(0)
 
 # using jld2 is way faster for loading/reading than csv
 # data = load("data/lincs_untrt_data.jld2")["filtered_data"] # untrt only
@@ -182,6 +182,14 @@ function (model::Model)(input::IntMatrix2DType)
     return logits_output
 end
 
+embedded = model.embedding(x)
+encoded = model.pos_encoder(embedded)
+encoded_dropped = model.pos_dropout(encoded)
+transformed = model.transformer(encoded_dropped)
+pooled = dropdims(mean(transformed; dims=2), dims=2)
+logits_output = model.classifier(pooled)
+
+
 #######################################################################################################################################
 
 ### splitting data
@@ -207,8 +215,8 @@ X_train, y_train, X_test, y_test = split_data(X, y, 0.2)
 ### training
 
 n_genes, n_samples = size(X)
-batch_size = 64
-n_epochs = 5
+batch_size = 128
+n_epochs = 1
 embed_dim = 32
 hidden_dim = 64
 n_heads = 4
@@ -226,6 +234,9 @@ model = Model(
     dropout_prob=drop_prob
 ) |> gpu
 
+# trr = Flux.trainables(model)
+# zzz = [prod(size(t)) for t in trr]
+
 opt = Flux.setup(Adam(lr), model)
 function loss(model, x, y)
     logits = model(x)  # (n_classes, batch_size)
@@ -235,6 +246,15 @@ end
 # loss = logitcrossentropy(model(x), y) + α * sum(p -> sum(abs2, p), params(model)) # L2 regularization
 train_dataloader = Flux.DataLoader((X_train, y_train), batchsize=batch_size)
 test_dataloader = Flux.DataLoader((X_test, y_test), batchsize=batch_size)
+
+# (x, y) = first(train_dataloader)
+# x_gpu, y_gpu = gpu(x), gpu(y)
+# loss_val, grads = Flux.withgradient(model) do m
+#     loss(m, x_gpu, y_gpu)
+# end
+
+# ll = loss(model, x_gpu, y_gpu)
+# logits = model(x) 
 
 train_losses = Float32[]
 test_losses = Float32[]
@@ -284,7 +304,7 @@ end
 Plots.plot(1:n_epochs, train_losses, label="training loss", xlabel="epoch", ylabel="loss", 
      title="training vs validation loss", lw=2)
 Plots.plot!(1:n_epochs, test_losses, label="test loss", lw=2)
-Plots.savefig("plots/trt_and_untrt/transformer/trainval_loss.png")
+Plots.savefig("trainval_loss.png")
 
 df = DataFrame(test_accuracies, :auto)
 CSV.write("test_accuracies.csv", df)
