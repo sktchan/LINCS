@@ -182,12 +182,12 @@ function (model::Model)(input::IntMatrix2DType)
     return logits_output
 end
 
-embedded = model.embedding(x)
-encoded = model.pos_encoder(embedded)
-encoded_dropped = model.pos_dropout(encoded)
-transformed = model.transformer(encoded_dropped)
-pooled = dropdims(mean(transformed; dims=2), dims=2)
-logits_output = model.classifier(pooled)
+# embedded = model.embedding(x)
+# encoded = model.pos_encoder(embedded)
+# encoded_dropped = model.pos_dropout(encoded)
+# transformed = model.transformer(encoded_dropped)
+# pooled = dropdims(mean(transformed; dims=2), dims=2)
+# logits_output = model.classifier(pooled)
 
 
 #######################################################################################################################################
@@ -304,7 +304,7 @@ end
 Plots.plot(1:n_epochs, train_losses, label="training loss", xlabel="epoch", ylabel="loss", 
      title="training vs validation loss", lw=2)
 Plots.plot!(1:n_epochs, test_losses, label="test loss", lw=2)
-Plots.savefig("trainval_loss.png")
+Plots.savefig("plots/untrt/transformer/trainval_loss.png")
 
 df = DataFrame(test_accuracies, :auto)
-CSV.write("test_accuracies.csv", df)
+CSV.write("plots/untrt/transformer/test_accuracies.csv", df)
