@@ -1,6 +1,9 @@
 # TODO: look into pos encoding
-# TODO: currently at 6-7mins per epoch on untrt --> is this ok? cannot run on 128 batchsize...?
-# TODO: currently at 2h9m per epoch on trt+untrt --> defos not ok... how to opt?
+# TODO: on untrt only: 10epochs = 2.5hrs
+# TODO: on trt+untrt: 10epochs = 46hrs
+
+using Pkg
+Pkg.activate("/home/golem/scratch/chans/lincs")
 
 using LincsProject, DataFrames, CSV, Dates, JSON, StatsBase, JLD2
 using Flux, Random, OneHotArrays, CategoricalArrays, ProgressBars, CUDA, Statistics, Plots, CairoMakie, LinearAlgebra
@@ -215,8 +218,8 @@ X_train, y_train, X_test, y_test = split_data(X, y, 0.2)
 ### training
 
 n_genes, n_samples = size(X)
-batch_size = 128
-n_epochs = 1
+batch_size = 64
+n_epochs = 10
 embed_dim = 32
 hidden_dim = 64
 n_heads = 4
@@ -304,7 +307,7 @@ end
 Plots.plot(1:n_epochs, train_losses, label="training loss", xlabel="epoch", ylabel="loss", 
      title="training vs validation loss", lw=2)
 Plots.plot!(1:n_epochs, test_losses, label="test loss", lw=2)
-Plots.savefig("plots/untrt/transformer/trainval_loss.png")
+Plots.savefig("plots/trt_and_untrt/transformer/trainval_loss.png")
 
-df = DataFrame(test_accuracies, :auto)
-CSV.write("plots/untrt/transformer/test_accuracies.csv", df)
+df = DataFrame(test_accuracy = test_accuracies)
+CSV.write("plots/trt_and_untrt/transformer/test_accuracies.csv", df)
