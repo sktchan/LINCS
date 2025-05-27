@@ -53,3 +53,19 @@ good option: Flux.MultiHeadAttention((64, 64, 64) => (64, 64) => 64, nheads=1), 
 - q, k, v input dim should all be the same if data type is the same or we aren't doing encoder-decoder
 - middle dimensions should also be the same unless we want to reduce computational complexity in the middle
 - output can also be the same unless we want to do ft compression or expansion
+
+may 1, 2025 - masked loss fxn
+function loss_masked(model, x, y_masked)
+    logits = model(x)  # (n_classes, seq_len, batch_size)
+    logits = permutedims(logits, (2, 3, 1))  # seq_len × batch_size × n_classes (to match targets)
+    logits = reshape(logits, :, n_classes)   # (seq_len * batch_size) × n_classes
+
+    y_masked_flat = vec(y_masked) # flatten
+    # only keep where y_masked != -100
+    mask = y_masked_flat .!= -100
+    logits_masked = (logits[mask, :])'
+    targets_masked = y_masked_flat[mask]
+    y_oh = Flux.onehotbatch(targets_masked, 1:n_classes)
+
+    return Flux.logitcrossentropy(logits_masked, y_oh)
+end

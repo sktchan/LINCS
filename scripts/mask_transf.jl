@@ -5,13 +5,17 @@ in order to mask:
 - remove global avg pooling; keep pred output per position
 - only compute loss on masked positions
 - no need for n_classes or labels - we are predicting hidden values!
+
+currently: 20min per epoch
 =#
 
-# FIXME: error on masked loss fxn with shape of logits!!! 
+using Pkg
+Pkg.activate("/home/golem/scratch/chans/lincs")
 
-using LincsProject, DataFrames, CSV, Dates, JSON, StatsBase, JLD2
+# using Infiltrator
+using LincsProject, DataFrames, CSV, Dates, JSON, StatsBase, JLD2, SparseArrays
 using Flux, Random, OneHotArrays, CategoricalArrays, ProgressBars, CUDA, Statistics, Plots, CairoMakie, LinearAlgebra
-CUDA.device!(1)
+CUDA.device!(0)
 
 data = load("data/lincs_untrt_data.jld2")["filtered_data"] # untrt only
 # data = load("data/lincs_trt_untrt_data.jld2")["filtered_data"] # trt and untrt data
@@ -182,7 +186,7 @@ end
 
 ### splitting data
 
-function split_data(X, test_ratio::Float64, y=nothing)
+function split_data(X, test_ratio::Float64, y=nothing) # masking doesn't need y!
     n = size(X, 2)
     indices = shuffle(1:n)
 
@@ -209,16 +213,16 @@ X_train, X_test = split_data(X, 0.2)
 const MASK_ID = n_features + 1
 
 function mask_input(X::Matrix{Int64}; mask_ratio=0.10)
-    X_masked = copy(X)
-    mask_labels = fill(-100, size(X)) # -100 means ignore this position in loss (standard trick)
+    X_masked = copy(X) # or view()??
+    mask_labels = fill(-100, size(X)) # -100 = ignore, this is not masked
 
-    for j in 1:size(X,2) # for each sample
-        n_to_mask = ceil(Int, size(X,1) * mask_ratio)
-        mask_positions = randperm(size(X,1))[1:n_to_mask]
+    for j in 1:size(X,2) # per column
+        num_masked = ceil(Int, size(X,1) * mask_ratio)
+        mask_positions = randperm(size(X,1))[1:num_masked]
 
         for pos in mask_positions
-            mask_labels[pos, j] = X[pos, j]  # save the original token
-            X_masked[pos, j] = MASK_ID # replace with MASK token
+            mask_labels[pos, j] = X[pos, j] # original label
+            X_masked[pos, j] = MASK_ID # mask label
         end
     end
     return X_masked, mask_labels
@@ -230,14 +234,14 @@ X_test_masked, y_test_masked = mask_input(X_test)
 ### training
 
 n_genes, n_samples = size(X)
-batch_size = 128
-n_epochs = 1
+batch_size = 64
+n_epochs = 3
 embed_dim = 32
 hidden_dim = 64
 n_heads = 4
 n_layers = 1
 drop_prob = 0.1
-lr = 0.001
+lr = 0.01
 
 model = Model(
     input_size=n_features,
@@ -251,24 +255,21 @@ model = Model(
 
 opt = Flux.setup(Adam(lr), model)
 
-function loss(model, x, y)
-    logits = model(x)  # (n_classes, batch_size)
-    y_oh = Flux.onehotbatch(y, 1:n_classes)  # convert to one-hot since target labels are of (batch_size,) to match logits
-    return Flux.logitcrossentropy(logits, y_oh)
-end
+#=
+loss: cross-entropy between the model’s predicted distribution and the true token at each masked position
+compute the loss by iterating over masked positions OR by using a mask in the loss function
+=#
 
-function loss_masked(model, x, y_masked)
+function loss_masked(model, x, y)
     logits = model(x)  # (n_classes, seq_len, batch_size)
-    logits = permutedims(logits, (2, 3, 1))  # seq_len × batch_size × n_classes (to match targets)
-    logits = reshape(logits, :, n_classes)   # (seq_len * batch_size) × n_classes
+    logits_flat = reshape(logits, size(logits, 1), :) # (n_classes, seq_len*batch_size)
+    y_flat = vec(y) # (seq_len*batch_size) column vec
 
-    y_masked_flat = vec(y_masked) # flatten
-    # only keep where y_masked != -100
-    mask = y_masked_flat .!= -100
-    logits_masked = logits[mask, :]
-    targets_masked = y_masked_flat[mask]
-    y_oh = Flux.onehotbatch(targets_masked, 1:n_classes)
+    mask = y_flat .!= -100 # bit vec, where sum = n_masked
+    logits_masked = logits_flat[:, mask] # (n_classes, n_masked)
+    y_masked = y_flat[mask] # (n_masked) column vec
 
+    y_oh = Flux.onehotbatch(y_masked, 1:n_classes) # (n_classes, n_masked)
     return Flux.logitcrossentropy(logits_masked, y_oh)
 end
 
@@ -296,6 +297,27 @@ for epoch in ProgressBar(1:n_epochs)
     test_epoch_losses = Float32[]
     tp = 0
     totals = 0
+
+    # for (x, y) in test_dataloader
+    #     x_gpu, y_gpu = gpu(x), gpu(y)
+
+    #     test_loss_val = loss_masked(model, x_gpu, y_gpu)
+    #     push!(test_epoch_losses, test_loss_val)
+
+    #     logits = model(x_gpu)  # (n_classes, seq_len, batch_size)
+    #     logits_flat = reshape(logits, size(logits, 1), :)
+    #     preds_flat = Flux.onecold(logits_flat) |> cpu
+
+    #     y_flat = vec(cpu(y_gpu))
+    #     mask = y_flat .!= -100
+
+    #     preds_masked = preds_flat[mask]
+    #     y_masked = y_flat[mask]
+
+    #     tp += sum(preds_masked .== y_masked)
+    #     totals += length(y_masked)
+    # end
+
     for (x, y) in test_dataloader
         x_gpu, y_gpu = gpu(x), gpu(y)
 
@@ -324,5 +346,5 @@ Plots.plot(1:n_epochs, train_losses, label="training loss", xlabel="epoch", ylab
 Plots.plot!(1:n_epochs, test_losses, label="test loss", lw=2)
 Plots.savefig("plots/untrt/masked/trainval_loss.png")
 
-df = DataFrame(test_accuracies, :auto)
+df = DataFrame(test_accuracy = test_accuracies)
 CSV.write("plots/untrt/masked/test_accuracies.csv", df)
