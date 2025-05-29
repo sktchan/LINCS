@@ -1,6 +1,7 @@
 # TODO: look into pos encoding
 # TODO: on untrt only: 10epochs = 2.5hrs
 # TODO: on trt+untrt: 10epochs = 46hrs
+# FIXME: there's an issue somwhere in Transf.mha (NNlib.dot_product_attention) due to a 58g size intermediate object when you use a batch size of 4096. look into later!
 
 using Pkg
 Pkg.activate("/home/golem/scratch/chans/lincs")
