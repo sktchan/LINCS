@@ -12,6 +12,7 @@ function (tf::Transf)(input::Float32Matrix2DType) # input is features (978) x ba
     return x
 end
 
+
 apr 11, 2025 - flux_transf.jl
 using a for loop and replacing a matrix of -1 rather than making a copy is much faster! 
 using the function below (commented parts) is a little easier to read, but the current impl. in the file is much more efficient.
@@ -54,7 +55,8 @@ good option: Flux.MultiHeadAttention((64, 64, 64) => (64, 64) => 64, nheads=1), 
 - middle dimensions should also be the same unless we want to reduce computational complexity in the middle
 - output can also be the same unless we want to do ft compression or expansion
 
-may 1, 2025 - masked loss fxn
+
+may 1, 2025 - masked loss fxn - DONE
 function loss_masked(model, x, y_masked)
     logits = model(x)  # (n_classes, seq_len, batch_size)
     logits = permutedims(logits, (2, 3, 1))  # seq_len × batch_size × n_classes (to match targets)
@@ -69,3 +71,117 @@ function loss_masked(model, x, y_masked)
 
     return Flux.logitcrossentropy(logits_masked, y_oh)
 end
+
+
+may 27, 2025 - training fxn with masked values for accuracy - DONE
+function loss(model, x, y)
+    logits = model(x)  # (n_classes, seq_len, batch_size)
+    logits_flat = reshape(logits, size(logits, 1), :) # (n_classes, seq_len*batch_size)
+    y_flat = vec(y) # (seq_len*batch_size) column vec
+
+    mask = y_flat .!= -100 # bit vec, where sum = n_masked
+    logits_masked = logits_flat[:, mask] # (n_classes, n_masked)
+    y_masked = y_flat[mask] # (n_masked) column vec
+
+    y_oh = Flux.onehotbatch(y_masked, 1:n_classes) # (n_classes, n_masked)
+    return Flux.logitcrossentropy(logits_masked, y_oh) 
+end
+
+could return logits_masked and y_masked as well, then do:
+
+preds_masked = Flux.onecold(logits_masked)
+preds_masked_cpu = preds_masked |> cpu
+preds_masked_cpu .== y_masked
+accuracy = sum(preds_masked_cpu .== y_masked) / length(y_masked)
+
+
+may 29, 2025 - sparse matrices
+in train loop, instead of y_gpu:
+y_batch_sparse = get_sparse_batch(y_train_masked, start_idx, end_idx)
+
+using SparseArrays
+
+function mask_input_sparse(X::Matrix{Int64}; mask_ratio=0.10)
+    X_masked = copy(X)
+    # Create sparse matrix for labels
+    I_indices = Int[]  # row indices
+    J_indices = Int[]  # column indices  
+    values = Int16[]   # actual gene indices
+    
+    for j in 1:size(X, 2)
+        num_masked = ceil(Int, size(X, 1) * mask_ratio)
+        mask_positions = randperm(size(X, 1))[1:num_masked]
+        
+        for pos in mask_positions
+            push!(I_indices, pos)
+            push!(J_indices, j)
+            push!(values, X[pos, j])  # original gene index
+            
+            X_masked[pos, j] = MASK_ID
+        end
+    end
+    
+    y_sparse = sparse(I_indices, J_indices, values, size(X)...)
+    return X_masked, y_sparse
+end
+
+X_train_masked, y_train_masked = mask_input_sparse(X_train)
+X_test_masked, y_test_masked = mask_input_sparse(X_test)
+
+function loss_sparse(model, x, y_sparse_batch, mode)
+    logits = model(x)  # (n_classes, seq_len, batch_size)
+    
+    rows_cpu, cols_cpu, vals_cpu = findnz(y_sparse_batch)
+    
+    if isempty(rows_cpu)
+        return 0.0f0
+    end
+    
+    rows_gpu = cu(rows_cpu)
+    cols_gpu = cu(cols_cpu) 
+    vals_gpu = cu(vals_cpu)
+    
+    batch_size = size(logits, 3)
+    seq_len = size(logits, 2)
+    
+    linear_indices = (cols_gpu .- 1) .* seq_len .+ rows_gpu
+    
+    logits_reshaped = reshape(logits, size(logits, 1), :) # (n_classes, seq_len * batch_size)
+    masked_logits = logits_reshaped[:, linear_indices]  # (n_classes, n_masked)
+    
+    y_oh = Flux.onehotbatch(vals_gpu, 1:n_classes)
+    
+    if mode == "train"
+        return Flux.logitcrossentropy(masked_logits, y_oh)
+    elseif mode == "test"
+        return Flux.logitcrossentropy(masked_logits, y_oh), masked_logits, vals_gpu
+    end
+end
+
+function get_sparse_batch(y_sparse, start_idx, end_idx)
+    rows, cols, vals = findnz(y_sparse[:, start_idx:end_idx])
+    cols_adjusted = cols
+    batch_sparse = sparse(rows, cols_adjusted, vals, size(y_sparse, 1), end_idx - start_idx + 1)
+    
+    return batch_sparse
+end
+
+** with the above code, 11mins 1 epoch (see github @ this time for other params) VS. 11mins 1 epoch for dense representations.
+can revisit later if there is found to be memory bottlenecks @ matrix operations, however for now the dense is sufficient b/c:
+https://www.reddit.com/r/Julia/comments/108g5ou/when_is_it_worth_working_with_sparse_matrices/
+https://medium.com/data-science/sparse-matrices-in-pytorch-part-2-gpus-fd9cc0725b71
+- above state that there should be about 1% or less sparsity for GPU sparse matrices to be efficient
+- due to the need to repeatedly transfer data between CPU and GPU and sparse slicing operations in batching
+
+may 29, 2025 - masked model accuracies ??? terrible
+test_accuracy
+0.008655561
+0.008968516
+0.009150905
+0.009203741
+0.009552768
+0.00981746
+0.009916021
+0.010957512
+0.011520934
+0.011787658

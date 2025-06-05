@@ -3,10 +3,10 @@ https://pub.towardsai.net/transformers-well-explained-masking-b7f0e671117c
 in order to mask:
 - set masked positions to a "MASK" token; 979 (or set to 0 or -inf?)
 - remove global avg pooling; keep pred output per position
-- only compute loss on masked positions
+- only compute loss/test accuracy on masked positions
 - no need for n_classes or labels - we are predicting hidden values!
 
-currently: 20min per epoch
+currently: 25min per epoch
 =#
 
 using Pkg
@@ -20,7 +20,7 @@ CUDA.device!(0)
 data = load("data/lincs_untrt_data.jld2")["filtered_data"] # untrt only
 # data = load("data/lincs_trt_untrt_data.jld2")["filtered_data"] # trt and untrt data
 
-### tokenization
+### tokenization (row 1 is ranks of gene 1 in each sample)
 
 function sort_gene(expr)
     n, m = size(expr)
@@ -39,8 +39,8 @@ end
 
 @time X = sort_gene(data.expr) # lookup table of indices from highest rank to lowest rank gene, 978 x 100425
 
-n_features = size(X, 1)
-n_classes = n_features + 1
+n_features = size(X, 1) + 1
+n_classes = size(X, 1)
 
 #######################################################################################################################################
 
@@ -210,11 +210,11 @@ X_train, X_test = split_data(X, 0.2)
 
 ### masking data
 
-const MASK_ID = n_features + 1
+const MASK_ID = (n_classes + 1)
 
 function mask_input(X::Matrix{Int64}; mask_ratio=0.10)
     X_masked = copy(X) # or view()??
-    mask_labels = fill(-100, size(X)) # -100 = ignore, this is not masked
+    mask_labels = fill((-100), size(X)) # -100 = ignore, this is not masked
 
     for j in 1:size(X,2) # per column
         num_masked = ceil(Int, size(X,1) * mask_ratio)
@@ -235,13 +235,13 @@ X_test_masked, y_test_masked = mask_input(X_test)
 
 n_genes, n_samples = size(X)
 batch_size = 64
-n_epochs = 3
+n_epochs = 30
 embed_dim = 32
 hidden_dim = 64
 n_heads = 4
 n_layers = 1
 drop_prob = 0.1
-lr = 0.01
+lr = 0.001
 
 model = Model(
     input_size=n_features,
@@ -260,7 +260,7 @@ loss: cross-entropy between the model’s predicted distribution and the true to
 compute the loss by iterating over masked positions OR by using a mask in the loss function
 =#
 
-function loss_masked(model, x, y)
+function loss(model::Model, x, y, mode::String)
     logits = model(x)  # (n_classes, seq_len, batch_size)
     logits_flat = reshape(logits, size(logits, 1), :) # (n_classes, seq_len*batch_size)
     y_flat = vec(y) # (seq_len*batch_size) column vec
@@ -268,68 +268,65 @@ function loss_masked(model, x, y)
     mask = y_flat .!= -100 # bit vec, where sum = n_masked
     logits_masked = logits_flat[:, mask] # (n_classes, n_masked)
     y_masked = y_flat[mask] # (n_masked) column vec
-
     y_oh = Flux.onehotbatch(y_masked, 1:n_classes) # (n_classes, n_masked)
-    return Flux.logitcrossentropy(logits_masked, y_oh)
+
+    if mode == "train"
+        return Flux.logitcrossentropy(logits_masked, y_oh) 
+    end
+    if mode == "test"
+        return Flux.logitcrossentropy(logits_masked, y_oh), logits_masked, y_masked
+    end
 end
 
-train_dataloader = Flux.DataLoader((X_train_masked, y_train_masked), batchsize=batch_size)
-test_dataloader = Flux.DataLoader((X_test_masked, y_test_masked), batchsize=batch_size)
+# train_dataloader = Flux.DataLoader((X_train_masked, y_train_masked), batchsize=batch_size)
+# test_dataloader = Flux.DataLoader((X_test_masked, y_test_masked), batchsize=batch_size)
 
 train_losses = Float32[]
 test_losses = Float32[]
 test_accuracies = Float32[]
-for epoch in ProgressBar(1:n_epochs)
-    Flux.trainmode!(model)
-    epoch_losses = Float32[]
-    for (x, y) in train_dataloader # x dimensions = 978 * batch_size. y dimensions = 1 * batch_size
-        x_gpu, y_gpu = gpu(x), gpu(y)
 
+for epoch in ProgressBar(1:n_epochs)
+
+    epoch_losses = Float32[]
+
+    # for (x, y) in train_dataloader # x dimensions = 978 * batch_size. y dimensions = 1 * batch_size
+    # x_gpu, y_gpu = gpu(x), gpu(y)
+
+    for start_idx in 1:batch_size:size(X_train_masked, 2)
+        end_idx = min(start_idx + batch_size - 1, size(X_train_masked, 2))
+        x_gpu = gpu(X_train_masked[:, start_idx:end_idx])
+        y_gpu = gpu(y_train_masked[:, start_idx:end_idx])
+        # y_batch_sparse = get_sparse_batch(y_train_masked, start_idx, end_idx)
+        
         loss_val, grads = Flux.withgradient(model) do m
-            loss_masked(m, x_gpu, y_gpu)
+            loss(m, x_gpu, y_gpu, "train")
         end
         Flux.update!(opt, model, grads[1])
+        # loss_val = loss(m, x_gpu, y_gpu, "train")
         push!(epoch_losses, loss_val)
     end
+
     push!(train_losses, mean(epoch_losses))
     
-    Flux.testmode!(model)
     test_epoch_losses = Float32[]
     tp = 0
     totals = 0
 
     # for (x, y) in test_dataloader
     #     x_gpu, y_gpu = gpu(x), gpu(y)
+    
+    for start_idx in 1:batch_size:size(X_test_masked, 2)
+        end_idx = min(start_idx + batch_size - 1, size(X_test_masked, 2))
+        x_gpu = gpu(X_test_masked[:, start_idx:end_idx])
+        y_gpu = gpu(y_test_masked[:, start_idx:end_idx])
 
-    #     test_loss_val = loss_masked(model, x_gpu, y_gpu)
-    #     push!(test_epoch_losses, test_loss_val)
-
-    #     logits = model(x_gpu)  # (n_classes, seq_len, batch_size)
-    #     logits_flat = reshape(logits, size(logits, 1), :)
-    #     preds_flat = Flux.onecold(logits_flat) |> cpu
-
-    #     y_flat = vec(cpu(y_gpu))
-    #     mask = y_flat .!= -100
-
-    #     preds_masked = preds_flat[mask]
-    #     y_masked = y_flat[mask]
-
-    #     tp += sum(preds_masked .== y_masked)
-    #     totals += length(y_masked)
-    # end
-
-    for (x, y) in test_dataloader
-        x_gpu, y_gpu = gpu(x), gpu(y)
-
-        test_loss_val = loss_masked(model, x_gpu, y_gpu)
+        test_loss_val, logits_masked, y_masked = loss(model, x_gpu, y_gpu, "test")
         push!(test_epoch_losses, test_loss_val)
 
-        logits = model(x_gpu)
-        preds = Flux.onecold(logits) |> cpu # convert logits to predicted class labels
-        y_cpu = cpu(y_gpu)
+        preds_masked = Flux.onecold(logits_masked) |> cpu
 
-        tp += sum(preds .== y_cpu) # true positives
-        totals += length(y_cpu) # total samples
+        tp += sum(preds_masked .== cpu(y_masked)) # true positives
+        totals += length(y_masked) # total samples
     end
 
     test_acc = tp / totals
