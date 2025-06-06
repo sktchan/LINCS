@@ -212,7 +212,7 @@ X_train, X_test = split_data(X, 0.2)
 
 const MASK_ID = (n_classes + 1)
 
-function mask_input(X::Matrix{Int64}; mask_ratio=0.10)
+function mask_input(X::Matrix{Int64}; mask_ratio=0.15)
     X_masked = copy(X) # or view()??
     mask_labels = fill((-100), size(X)) # -100 = ignore, this is not masked
 
@@ -228,19 +228,33 @@ function mask_input(X::Matrix{Int64}; mask_ratio=0.10)
     return X_masked, mask_labels
 end
 
-X_train_masked, y_train_masked = mask_input(X_train)
+# attempting dynamic masking (diff mask each time = learn more?)
+function mask_input!(X::Matrix{Int}; mask_ratio=0.15) # X modified in-place
+    y = fill(-100, size(X))
+    for col in axes(X, 2)
+        n_mask = ceil(Int, size(X,1)*mask_ratio)
+        pos    = randperm(size(X,1))[1:n_mask]
+        @inbounds for row in pos
+            y[row,col] = X[row,col]
+            X[row,col] = MASK_ID
+        end
+    end
+    return y
+end
+
+# X_train_masked, y_train_masked = mask_input(X_train)
 X_test_masked, y_test_masked = mask_input(X_test)
 
 ### training
 
 n_genes, n_samples = size(X)
 batch_size = 64
-n_epochs = 30
+n_epochs = 60
 embed_dim = 32
 hidden_dim = 64
 n_heads = 4
 n_layers = 1
-drop_prob = 0.1
+drop_prob = 0.05
 lr = 0.001
 
 model = Model(
@@ -288,6 +302,10 @@ test_accuracies = Float32[]
 for epoch in ProgressBar(1:n_epochs)
 
     epoch_losses = Float32[]
+
+    # dynamic masking here
+    X_train_masked = copy(X_train)
+    y_train_masked = mask_input!(X_train_masked)
 
     # for (x, y) in train_dataloader # x dimensions = 978 * batch_size. y dimensions = 1 * batch_size
     # x_gpu, y_gpu = gpu(x), gpu(y)
@@ -337,11 +355,28 @@ end
 
 ### evaluation metrics
 
-# loss plot
-Plots.plot(1:n_epochs, train_losses, label="training loss", xlabel="epoch", ylabel="loss", 
-     title="training vs validation loss", lw=2)
-Plots.plot!(1:n_epochs, test_losses, label="test loss", lw=2)
-Plots.savefig("plots/untrt/masked/trainval_loss.png")
+# # loss plot
+# Plots.plot(1:n_epochs, train_losses, label="training loss", xlabel="epoch", ylabel="loss", 
+#      title="training vs validation loss", lw=2)
+# Plots.plot!(1:n_epochs, test_losses, label="test loss", lw=2)
+# Plots.savefig("plots/untrt/masked/gpu2/trainval_loss.png")
+
+# df = DataFrame(test_accuracy = test_accuracies)
+# CSV.write("plots/untrt/masked/gpu2/test_accuracies.csv", df)
+
+
+
+
+# make dir if not present already
+save_dir = joinpath("plots", "untrt", "masked", "dyn_mask")
+mkpath(save_dir)
+
+plot(1:n_epochs, train_losses; label="training loss",
+     xlabel="epoch", ylabel="loss", title="training vs validation loss", lw=2)
+plot!(1:n_epochs, test_losses;  label="test loss", lw=2)
+png_path = joinpath(save_dir, "trainval_loss.png")
+savefig(png_path)
 
 df = DataFrame(test_accuracy = test_accuracies)
-CSV.write("plots/untrt/masked/test_accuracies.csv", df)
+csv_path = joinpath(save_dir, "test_accuracies.csv")
+CSV.write(csv_path, df)
