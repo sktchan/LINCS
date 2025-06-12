@@ -114,9 +114,106 @@ Plots.savefig("plots/untrt/ranked_mlp/trainval_loss.png")
 X_test_gpu = gpu(X_test)
 y_test_gpu = gpu(y_test)
 test_output = model(X_test_gpu)
-pred_labels = map(i -> argmax(test_output[:, i]), 1:size(test_output, 2))
-true_labels = map(i -> argmax(y_test_gpu[:, i]), 1:size(y_test_gpu, 2))
+
+test_output_cpu = cpu(test_output)
+y_test_cpu = cpu(y_test_gpu)
+pred_labels = map(i -> argmax(test_output_cpu[:, i]), 1:size(test_output_cpu, 2))
+true_labels = map(i -> argmax(y_test_cpu[:, i]), 1:size(y_test_cpu, 2))
 acc = mean(pred_labels .== true_labels)
+
+# plotting ROC/AUC
+function roc_curve(scores, labels)
+    n_pos = count(labels) # positives  (= TP + FN)
+    n_neg = length(labels) - n_pos # negatives  (= FP + TN)
+
+    # sort descending by score
+    order = sortperm(scores; rev = true)
+    tp = 0; fp = 0
+    tpr = Float64[]; fpr = Float64[]
+
+    current_score = Inf
+    for idx in order
+        s = scores[idx]
+        if s != current_score
+            push!(tpr, tp / n_pos)
+            push!(fpr, fp / n_neg)
+            current_score = s
+        end
+        if labels[idx]
+            tp += 1
+        else
+            fp += 1
+        end
+    end
+    push!(tpr, tp / n_pos)
+    push!(fpr, fp / n_neg)
+    return fpr, tpr
+end
+
+auc_trapz(x, y) = sum(diff(x) .* (y[1:end-1] .+ y[2:end])) / 2
+proba = Flux.softmax(test_output_cpu; dims = 1)
+true_int = [argmax(y_test_cpu[:, i]) for i in 1:size(y_test_cpu, 2)]
+fpr_cls = Vector{Vector{Float64}}(undef, n_classes)
+tpr_cls = similar(fpr_cls)
+auc_cls = zeros(Float64, n_classes)
+
+for c in 1:n_classes
+    scores_c = vec(proba[c, :])
+    labels_c = true_int .== c
+    fpr_c, tpr_c = roc_curve(scores_c, labels_c)
+    auc_c = auc_trapz(fpr_c, tpr_c)
+
+    fpr_cls[c] = fpr_c
+    tpr_cls[c] = tpr_c
+    auc_cls[c] = auc_c
+end
+
+macro_auc = mean(auc_cls)
+scores_flat = Float64[]
+labels_flat = Bool[]
+
+for (j, gt) in enumerate(true_int), c in 1:n_classes
+    push!(scores_flat, proba[c, j])
+    push!(labels_flat, gt == c)
+end
+
+fpr2, tpr2 = roc_curve(scores_flat, labels_flat)
+micro_auc = auc_trapz(fpr2, tpr2)
+
+# import exp MLP info in
+using DelimitedFiles, Plots; gr()
+roc1 = readdlm("roc1.csv", ',')
+fpr1 = roc1[:,1]; tpr1 = roc1[:,2]
+
+# since we can't fit it on the plot
+function cutoff(fpr, tpr, maxpts=2000)
+    if length(fpr) > maxpts
+    step = ceil(Int, length(tpr) / maxpts)
+    fpr_plot = fpr[1:step:end]
+    tpr_plot = fpr[1:step:end]
+    else
+        fpr_plot = fpr
+        tpr_plot = tpr
+    end
+    return fpr_plot, tpr_plot
+end
+exp_fpr, exp_tpr = cutoff(fpr1, tpr1)
+rank_fpr, rank_tpr = cutoff(fpr2, tpr2)
+
+# plotting
+plt = Plots.plot(title  = "Cell Line Classification",
+           xlabel = "False positive rate",
+           ylabel = "True positive rate",
+           size   = (800,400))
+
+Plots.plot!(plt, exp_fpr, exp_tpr, lw = 3,
+      label = "Raw Expression AUC = 0.999")
+Plots.plot!(plt, rank_fpr, rank_tpr, lw = 3,
+      label = "Ranked AUC = 0.998")
+Plots.plot!(plt, [0,1], [0,1], linestyle = :dash, color = :black, label = false)
+savefig(plt, "plots/untrt/roc_auc/roc_final.png")  
+
+
 
 # # compute on test set - for conf matrix + heatmap
 # output = model(gpu(X_test))

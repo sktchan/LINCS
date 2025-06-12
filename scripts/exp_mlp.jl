@@ -139,6 +139,92 @@ pred_labels = map(i -> argmax(test_output_cpu[:, i]), 1:size(test_output_cpu, 2)
 true_labels = map(i -> argmax(y_test_cpu[:, i]), 1:size(y_test_cpu, 2))
 acc = mean(pred_labels .== true_labels)
 
+
+# plotting ROC/AUC
+function roc_curve(scores, labels)
+    n_pos = count(labels) # positives  (= TP + FN)
+    n_neg = length(labels) - n_pos # negatives  (= FP + TN)
+
+    # sort descending by score
+    order = sortperm(scores; rev = true)
+    tp = 0; fp = 0
+    tpr = Float64[]; fpr = Float64[]
+
+    current_score = Inf
+    for idx in order
+        s = scores[idx]
+        if s != current_score
+            push!(tpr, tp / n_pos)
+            push!(fpr, fp / n_neg)
+            current_score = s
+        end
+        if labels[idx]
+            tp += 1
+        else
+            fp += 1
+        end
+    end
+    push!(tpr, tp / n_pos)
+    push!(fpr, fp / n_neg)
+    return fpr, tpr
+end
+
+auc_trapz(x, y) = sum(diff(x) .* (y[1:end-1] .+ y[2:end])) / 2
+proba = Flux.softmax(test_output_cpu; dims = 1)         # (C, N)
+true_int = [argmax(y_test_cpu[:, i]) for i in 1:size(y_test_cpu, 2)]
+fpr_cls = Vector{Vector{Float64}}(undef, n_classes)
+tpr_cls = similar(fpr_cls)
+auc_cls = zeros(Float64, n_classes)
+
+for c in 1:n_classes
+    scores_c = vec(proba[c, :])
+    labels_c = true_int .== c
+    fpr_c, tpr_c = roc_curve(scores_c, labels_c)
+    auc_c = auc_trapz(fpr_c, tpr_c)
+
+    fpr_cls[c] = fpr_c
+    tpr_cls[c] = tpr_c
+    auc_cls[c] = auc_c
+end
+
+macro_auc = mean(auc_cls)
+scores_flat  = Float64[]
+labels_flat  = Bool[]
+
+for (j, gt) in enumerate(true_int), c in 1:n_classes
+    push!(scores_flat, proba[c, j])
+    push!(labels_flat, gt == c)
+end
+
+fpr_micro, tpr_micro = roc_curve(scores_flat, labels_flat)
+micro_auc = auc_trapz(fpr_micro, tpr_micro)
+
+# saving to compare against other MLP
+using DelimitedFiles
+writedlm("plots/untrt/roc_auc/exp_mlp_roc.csv", hcat(fpr_micro, tpr_micro), ',')
+
+# # since we can't fit it on the plot
+# maxpts = 2000
+# if length(fpr_micro) > maxpts
+#     step = ceil(Int, length(fpr_micro) / maxpts)
+#     fpr_plot = fpr_micro[1:step:end]
+#     tpr_plot = tpr_micro[1:step:end]
+# else
+#     fpr_plot = fpr_micro
+#     tpr_plot = tpr_micro
+# end
+
+# plt = Plots.plot(title  = "Micro-average ROC curve",
+#            xlabel = "False positive rate",
+#            ylabel = "True positive rate",
+#            size   = (800,600))
+
+# Plots.plot!(plt, fpr_plot, tpr_plot, lw = 3,
+#       label = "micro-avg AUC = $(round(micro_auc; digits=3))")
+# Plots.plot!(plt, [0,1], [0,1], linestyle = :dash, label = "random")
+
+# display(plt)                  # or savefig(plt, "roc_micro.png")
+
 # # compute on test set - for conf matrix + heatmap
 # output = model(gpu(X_test))
 # maxes = maximum(output, dims=1)
