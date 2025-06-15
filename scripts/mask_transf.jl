@@ -13,9 +13,9 @@ using Pkg
 Pkg.activate("/home/golem/scratch/chans/lincs")
 
 # using Infiltrator
-using LincsProject, DataFrames, CSV, Dates, JSON, StatsBase, JLD2, SparseArrays
+using LincsProject, DataFrames, CSV, Dates, JSON, StatsBase, JLD2, SparseArrays, Dates, Printf
 using Flux, Random, OneHotArrays, CategoricalArrays, ProgressBars, CUDA, Statistics, Plots, CairoMakie, LinearAlgebra
-CUDA.device!(0)
+CUDA.device!(1)
 
 data = load("data/lincs_untrt_data.jld2")["filtered_data"] # untrt only
 # data = load("data/lincs_trt_untrt_data.jld2")["filtered_data"] # trt and untrt data
@@ -211,8 +211,9 @@ X_train, X_test = split_data(X, 0.2)
 ### masking data
 
 const MASK_ID = (n_classes + 1)
+mask_ratio=0.1
 
-function mask_input(X::Matrix{Int64}; mask_ratio=0.15)
+function mask_input(X::Matrix{Int64}; mask_ratio=mask_ratio)
     X_masked = copy(X) # or view()??
     mask_labels = fill((-100), size(X)) # -100 = ignore, this is not masked
 
@@ -229,31 +230,31 @@ function mask_input(X::Matrix{Int64}; mask_ratio=0.15)
 end
 
 # attempting dynamic masking (diff mask each time = learn more?)
-function mask_input!(X::Matrix{Int}; mask_ratio=0.15) # X modified in-place
-    y = fill(-100, size(X))
-    for col in axes(X, 2)
-        n_mask = ceil(Int, size(X,1)*mask_ratio)
-        pos    = randperm(size(X,1))[1:n_mask]
-        @inbounds for row in pos
-            y[row,col] = X[row,col]
-            X[row,col] = MASK_ID
-        end
-    end
-    return y
-end
+# function mask_input_dyn(X::Matrix{Int}; mask_ratio=0.15) # change X without creating copy
+#     y = fill(-100, size(X))
+#     for col in axes(X, 2)
+#         n_mask = ceil(Int, size(X,1)*mask_ratio)
+#         pos = randperm(size(X,1))[1:n_mask]
+#         @inbounds for row in pos
+#             y[row,col] = X[row,col]
+#             X[row,col] = MASK_ID
+#         end
+#     end
+#     return y
+# end
 
-# X_train_masked, y_train_masked = mask_input(X_train)
+X_train_masked, y_train_masked = mask_input(X_train)
 X_test_masked, y_test_masked = mask_input(X_test)
 
 ### training
 
 n_genes, n_samples = size(X)
-batch_size = 64
-n_epochs = 60
-embed_dim = 32
+batch_size = 32
+n_epochs = 30
+embed_dim = 64
 hidden_dim = 64
-n_heads = 4
-n_layers = 1
+n_heads = 1
+n_layers = 4
 drop_prob = 0.05
 lr = 0.001
 
@@ -292,9 +293,6 @@ function loss(model::Model, x, y, mode::String)
     end
 end
 
-# train_dataloader = Flux.DataLoader((X_train_masked, y_train_masked), batchsize=batch_size)
-# test_dataloader = Flux.DataLoader((X_test_masked, y_test_masked), batchsize=batch_size)
-
 train_losses = Float32[]
 test_losses = Float32[]
 test_accuracies = Float32[]
@@ -303,12 +301,9 @@ for epoch in ProgressBar(1:n_epochs)
 
     epoch_losses = Float32[]
 
-    # dynamic masking here
-    X_train_masked = copy(X_train)
-    y_train_masked = mask_input!(X_train_masked)
-
-    # for (x, y) in train_dataloader # x dimensions = 978 * batch_size. y dimensions = 1 * batch_size
-    # x_gpu, y_gpu = gpu(x), gpu(y)
+    # # dynamic masking here
+    # X_train_masked = copy(X_train)
+    # y_train_masked = mask_input_dyn(X_train_masked)
 
     for start_idx in 1:batch_size:size(X_train_masked, 2)
         end_idx = min(start_idx + batch_size - 1, size(X_train_masked, 2))
@@ -320,7 +315,7 @@ for epoch in ProgressBar(1:n_epochs)
             loss(m, x_gpu, y_gpu, "train")
         end
         Flux.update!(opt, model, grads[1])
-        # loss_val = loss(m, x_gpu, y_gpu, "train")
+        loss_val = loss(model, x_gpu, y_gpu, "train")
         push!(epoch_losses, loss_val)
     end
 
@@ -330,9 +325,6 @@ for epoch in ProgressBar(1:n_epochs)
     tp = 0
     totals = 0
 
-    # for (x, y) in test_dataloader
-    #     x_gpu, y_gpu = gpu(x), gpu(y)
-    
     for start_idx in 1:batch_size:size(X_test_masked, 2)
         end_idx = min(start_idx + batch_size - 1, size(X_test_masked, 2))
         x_gpu = gpu(X_test_masked[:, start_idx:end_idx])
@@ -355,28 +347,56 @@ end
 
 ### evaluation metrics
 
-# # loss plot
-# Plots.plot(1:n_epochs, train_losses, label="training loss", xlabel="epoch", ylabel="loss", 
-#      title="training vs validation loss", lw=2)
-# Plots.plot!(1:n_epochs, test_losses, label="test loss", lw=2)
-# Plots.savefig("plots/untrt/masked/gpu2/trainval_loss.png")
+# # make dir if not present already
+# save_dir = joinpath("plots", "untrt", "masked", "dyn_mask")
+# mkpath(save_dir)
+
+# Plots.plot(1:n_epochs, train_losses; label="training loss",
+#      xlabel="epoch", ylabel="loss", title="training vs validation loss", lw=2)
+# Plots.plot!(1:n_epochs, test_losses;  label="test loss", lw=2)
+# png_path = joinpath(save_dir, "trainval_loss.png")
+# savefig(png_path)
 
 # df = DataFrame(test_accuracy = test_accuracies)
-# CSV.write("plots/untrt/masked/gpu2/test_accuracies.csv", df)
+# csv_path = joinpath(save_dir, "test_accuracies.csv")
+# CSV.write(csv_path, df)
 
 
-
-
-# make dir if not present already
-save_dir = joinpath("plots", "untrt", "masked", "dyn_mask")
+# mk dir
+timestamp = Dates.format(now(), "yyyy-mm-dd_HH-MM")
+save_dir = joinpath("plots", "untrt", "masked", timestamp)
 mkpath(save_dir)
 
-plot(1:n_epochs, train_losses; label="training loss",
+# loss plot
+Plots.plot(1:n_epochs, train_losses; label="training loss",
      xlabel="epoch", ylabel="loss", title="training vs validation loss", lw=2)
-plot!(1:n_epochs, test_losses;  label="test loss", lw=2)
-png_path = joinpath(save_dir, "trainval_loss.png")
-savefig(png_path)
+Plots.plot!(1:n_epochs, test_losses;  label="test loss", lw=2)
+savefig(joinpath(save_dir, "trainval_loss.png"))
 
+# accuracy plot
+acc_plot = Plots.plot(1:n_epochs, test_accuracies; label="test accuracy",
+    xlabel="epoch", ylabel="accuracy", title="accuracy", lw=2)
+savefig(joinpath(save_dir, "accuracy.png"))
+
+# log accuracies
 df = DataFrame(test_accuracy = test_accuracies)
-csv_path = joinpath(save_dir, "test_accuracies.csv")
-CSV.write(csv_path, df)
+CSV.write(joinpath(save_dir, "test_accuracies.csv"), df)
+
+# log params used
+params_txt = joinpath(save_dir, "params.txt")
+open(params_txt, "w") do io
+    println(io, "PARAMETERS:")
+    println(io, "###########")
+    println(io, "dataset = untrt")
+    println(io, "masking_ratio = $mask_ratio")
+    println(io, "NO DYNAMIC MASKING")
+    println(io, "batch_size = $batch_size")
+    println(io, "n_epochs = $n_epochs")
+    println(io, "embed_dim = $embed_dim")
+    println(io, "hidden_dim = $hidden_dim")
+    println(io, "n_heads = $n_heads")
+    println(io, "n_layers = $n_layers")
+    println(io, "learning_rate = $lr")
+    println(io, "dropout_probability = $drop_prob")
+    println(io, "ADDITIONAL NOTES: scaling model layers up, nheads down")
+end

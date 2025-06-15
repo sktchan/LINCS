@@ -173,54 +173,8 @@ https://medium.com/data-science/sparse-matrices-in-pytorch-part-2-gpus-fd9cc0725
 - above state that there should be about 1% or less sparsity for GPU sparse matrices to be efficient
 - due to the need to repeatedly transfer data between CPU and GPU and sparse slicing operations in batching
 
-may 29, 2025 - masked model accuracies ??? terrible
-test_accuracy
-0.008655561
-0.008968516
-0.009150905
-0.009203741
-0.009552768
-0.00981746
-0.009916021
-0.010957512
-0.011520934
-0.011787658
-
-june 5 on GPU(0)
-n_genes, n_samples = size(X)
-batch_size = 64
-n_epochs = 30
-embed_dim = 32
-hidden_dim = 64
-n_heads = 4
-n_layers = 1
-drop_prob = 0.1
-lr = 0.001
-mask_ratio = 0.10
-
-june 5 on GPU(1)
-n_genes, n_samples = size(X)
-batch_size = 64
-n_epochs = 50
-embed_dim = 64
-hidden_dim = 64
-n_heads = 4
-n_layers = 1
-drop_prob = 0.05
-lr = 0.001
-mask_ratio = 0.15
-
-june 6 on GPU(0)
+june 12 trying dynamic masking;
 **RoBERTa shows that masking a different subset every epoch already helps, 
 but recent work finds that decreasing the rate during training is even better 
 (to try later!!! aka scheduler)**
 ***dynamic on the train, static on the test***
-n_genes, n_samples = size(X)
-batch_size = 64
-n_epochs = 60
-embed_dim = 32
-hidden_dim = 64
-n_heads = 4
-n_layers = 1
-drop_prob = 0.05
-lr = 0.001
