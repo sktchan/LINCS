@@ -2,8 +2,8 @@ using LincsProject, DataFrames, CSV, Dates, JSON, StatsBase, JLD2
 using Flux, Random, OneHotArrays, CategoricalArrays, ProgressBars, CUDA, Statistics, Plots, CairoMakie, LinearAlgebra
 CUDA.device!(0)
 
-data = load("data/lincs_untrt_data.jld2")["filtered_data"] 
-# data = load("data/lincs_trt_untrt_data.jld2")["filtered_data"] # trt and untrt data
+# data = load("data/lincs_untrt_data.jld2")["filtered_data"] 
+data = load("data/lincs_trt_untrt_data.jld2")["filtered_data"] # trt and untrt data
 
 ### ranking encodings across columns
 
@@ -62,7 +62,7 @@ model = Chain(
 ) |> gpu
 
 n_epochs = 100
-n_batches = 128
+batch_size = 128
 loss(model, x, y) = Flux.logitcrossentropy(model(x), y)
 opt = Flux.setup(Adam(0.0001), model)
 
@@ -73,32 +73,66 @@ test_data = Flux.DataLoader((X_test, y_test), batchsize=n_batches, shuffle=true)
 train_losses = Float32[] 
 val_losses = Float32[]
 
-for epoch in ProgressBar(1:n_epochs)
-    Flux.trainmode!(model)
-    epoch_losses = Float64[]
+# for epoch in ProgressBar(1:n_epochs)
+#     Flux.trainmode!(model)
+#     epoch_losses = Float64[]
     
-    for (x, y) in train_data
-        x_gpu, y_gpu = gpu(x), gpu(y)
+#     for (x, y) in train_data
+#         x_gpu, y_gpu = gpu(x), gpu(y)
+#         loss_val, grads = Flux.withgradient(model) do m
+#             # loss(model, x_gpu, y_gpu)
+#             Flux.logitcrossentropy(m(x_gpu), y_gpu)
+#         end
+#         Flux.update!(opt, model, grads[1])
+#         loss_val = Flux.logitcrossentropy(model(x_gpu), y_gpu)
+#         push!(epoch_losses, loss_val)
+#     end
+#     push!(train_losses, mean(epoch_losses))
+    
+#     Flux.testmode!(model)
+#     val_epoch_losses = Float64[]
+    
+#     for (x, y) in val_data
+#         x_gpu, y_gpu = gpu(x), gpu(y)
+#         # val_loss = loss(model, x_gpu, y_gpu)
+#         val_loss = Flux.logitcrossentropy(model(x_gpu), y_gpu)
+#         push!(val_epoch_losses, val_loss)
+#     end
+    
+#     push!(val_losses, mean(val_epoch_losses))
+# end
+
+for epoch in ProgressBar(1:n_epochs)
+
+    epoch_losses = Float32[]
+
+    for start_idx in 1:batch_size:size(X_train, 2)
+        end_idx = min(start_idx + batch_size - 1, size(X_train, 2))
+        x_gpu = gpu(X_train[:, start_idx:end_idx])
+        y_gpu = gpu(y_train[:, start_idx:end_idx])
+        
         loss_val, grads = Flux.withgradient(model) do m
-            # loss(model, x_gpu, y_gpu)
-            Flux.logitcrossentropy(m(x_gpu), y_gpu)
+            loss(m, x_gpu, y_gpu)
         end
         Flux.update!(opt, model, grads[1])
+        loss_val = loss(model, x_gpu, y_gpu)
         push!(epoch_losses, loss_val)
     end
+
     push!(train_losses, mean(epoch_losses))
     
-    Flux.testmode!(model)
-    val_epoch_losses = Float64[]
+    test_epoch_losses = Float32[]
     
-    for (x, y) in val_data
-        x_gpu, y_gpu = gpu(x), gpu(y)
-        # val_loss = loss(model, x_gpu, y_gpu)
-        val_loss = Flux.logitcrossentropy(model(x_gpu), y_gpu)
-        push!(val_epoch_losses, val_loss)
+    for start_idx in 1:batch_size:size(X_val, 2)
+        end_idx = min(start_idx + batch_size - 1, size(X_val, 2))
+        x_gpu = gpu(X_val[:, start_idx:end_idx])
+        y_gpu = gpu(y_val[:, start_idx:end_idx])
+
+        test_loss_val = loss(model, x_gpu, y_gpu)
+        push!(test_epoch_losses, test_loss_val)
     end
-    
-    push!(val_losses, mean(val_epoch_losses))
+    push!(val_losses, mean(test_epoch_losses))
+
 end
 
 
@@ -108,7 +142,7 @@ end
 Plots.plot(1:n_epochs, train_losses, label="training loss", xlabel="epoch", ylabel="loss", 
      title="training vs validation loss", lw=2)
 Plots.plot!(1:n_epochs, val_losses, label="validation loss", lw=2)
-Plots.savefig("plots/untrt/ranked_mlp/trainval_loss.png")
+Plots.savefig("plots/trt_and_untrt/ranked_mlp/trainval_loss.png")
 
 # accuracy
 X_test_gpu = gpu(X_test)

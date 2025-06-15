@@ -5,7 +5,8 @@ using LincsProject, DataFrames, CSV, Dates, JSON, StatsBase, JLD2
 using Flux, Random, OneHotArrays, CategoricalArrays, ProgressBars, CUDA, Statistics, Plots, CairoMakie, LinearAlgebra
 CUDA.device!(0)
 
-data = load("data/lincs_untrt_data.jld2")["filtered_data"]
+# data = load("data/lincs_untrt_data.jld2")["filtered_data"]
+data = load("data/lincs_trt_untrt_data.jld2")["filtered_data"] # trt and untrt data
 
 unique_cell_lines = unique(data.inst.cell_iname)
 label_dict = Dict(name => i for (i, name) in enumerate(unique_cell_lines))
@@ -69,7 +70,7 @@ model = Chain(
 ) |> gpu
 
 n_epochs = 100
-n_batches = 4096
+batch_size = 4096
 loss(model, x, y) = Flux.logitcrossentropy(model(x), y)
 opt = Flux.setup(Adam(0.0005), model)
 
@@ -84,40 +85,37 @@ val_losses = Float32[]
 
 for epoch in ProgressBar(1:n_epochs)
 
-        # Flux.trainmode!(model)
-        epoch_losses = Float64[]
-    
-        for b in 0:10
-            bp = b + 1
-            x_gpu, y_gpu = gpu(X_train[:, b*n_batches+1:bp*n_batches+1]), gpu(y_train[:, b*n_batches+1:bp*n_batches+1])
-            loss_val, grads = Flux.withgradient(model) do m
-                # loss(model, x_gpu, y_gpu)
-                Flux.logitcrossentropy(m(x_gpu), y_gpu)
-            end
-            loss_val2 = Flux.logitcrossentropy(model(x_gpu), y_gpu)
-            println("$loss_val $loss_val2")
-            
-            Flux.update!(opt, model, grads[1])
-            loss_val = Flux.logitcrossentropy(model(x_gpu), y_gpu)
-            push!(epoch_losses, loss_val)
-            break
+    epoch_losses = Float32[]
+
+    for start_idx in 1:batch_size:size(X_train, 2)
+        end_idx = min(start_idx + batch_size - 1, size(X_train, 2))
+        x_gpu = gpu(X_train[:, start_idx:end_idx])
+        y_gpu = gpu(y_train[:, start_idx:end_idx])
+        
+        loss_val, grads = Flux.withgradient(model) do m
+            loss(m, x_gpu, y_gpu)
         end
-        push!(train_losses, mean(epoch_losses))
-
-
-    # Flux.testmode!(model)
-    val_epoch_losses = Float64[]
-    
-    for b in 0:10
-        bp = b + 1
-        x_gpu, y_gpu = gpu(X_val[:, b*n_batches+1:bp*n_batches+1]), gpu(y_val[:, b*n_batches+1:bp*n_batches+1])
-        # val_loss = loss(model, x_gpu, y_gpu)
-        val_loss = Flux.logitcrossentropy(model(x_gpu), y_gpu)
-        push!(val_epoch_losses, val_loss)
-        break
+        Flux.update!(opt, model, grads[1])
+        loss_val = loss(model, x_gpu, y_gpu)
+        push!(epoch_losses, loss_val)
     end
-    push!(val_losses, mean(val_epoch_losses))
+
+    push!(train_losses, mean(epoch_losses))
+    
+    test_epoch_losses = Float32[]
+    
+    for start_idx in 1:batch_size:size(X_val, 2)
+        end_idx = min(start_idx + batch_size - 1, size(X_val, 2))
+        x_gpu = gpu(X_val[:, start_idx:end_idx])
+        y_gpu = gpu(y_val[:, start_idx:end_idx])
+
+        test_loss_val = loss(model, x_gpu, y_gpu)
+        push!(test_epoch_losses, test_loss_val)
+    end
+    push!(val_losses, mean(test_epoch_losses))
+
 end
+
 
 
 ### evaluation metrics
@@ -142,8 +140,8 @@ acc = mean(pred_labels .== true_labels)
 
 # plotting ROC/AUC
 function roc_curve(scores, labels)
-    n_pos = count(labels) # positives  (= TP + FN)
-    n_neg = length(labels) - n_pos # negatives  (= FP + TN)
+    n_pos = count(labels) # positives (= TP + FN)
+    n_neg = length(labels) - n_pos # negatives (= FP + TN)
 
     # sort descending by score
     order = sortperm(scores; rev = true)
