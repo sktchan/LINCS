@@ -13,9 +13,9 @@ using Pkg
 Pkg.activate("/home/golem/scratch/chans/lincs")
 
 # using Infiltrator
-using LincsProject, DataFrames, CSV, Dates, JSON, StatsBase, JLD2, SparseArrays, Dates, Printf
+using LincsProject, DataFrames, CSV, Dates, JSON, StatsBase, JLD2, SparseArrays, Dates, Printf, Profile
 using Flux, Random, OneHotArrays, CategoricalArrays, ProgressBars, CUDA, Statistics, Plots, CairoMakie, LinearAlgebra
-CUDA.device!(1)
+CUDA.device!(0)
 
 data = load("data/lincs_untrt_data.jld2")["filtered_data"] # untrt only
 # data = load("data/lincs_trt_untrt_data.jld2")["filtered_data"] # trt and untrt data
@@ -211,7 +211,7 @@ X_train, X_test = split_data(X, 0.2)
 ### masking data
 
 const MASK_ID = (n_classes + 1)
-mask_ratio=0.1
+mask_ratio=0.15
 
 function mask_input(X::Matrix{Int64}; mask_ratio=mask_ratio)
     X_masked = copy(X) # or view()??
@@ -230,32 +230,85 @@ function mask_input(X::Matrix{Int64}; mask_ratio=mask_ratio)
 end
 
 # attempting dynamic masking (diff mask each time = learn more?)
-# function mask_input_dyn(X::Matrix{Int}; mask_ratio=0.15) # change X without creating copy
-#     y = fill(-100, size(X))
-#     for col in axes(X, 2)
-#         n_mask = ceil(Int, size(X,1)*mask_ratio)
-#         pos = randperm(size(X,1))[1:n_mask]
-#         @inbounds for row in pos
-#             y[row,col] = X[row,col]
-#             X[row,col] = MASK_ID
+function mask_input_dyn(X::Matrix{Int}; mask_ratio=0.15) # change X without creating copy
+    y = fill(-100, size(X))
+    for col in axes(X, 2)
+        n_mask = ceil(Int, size(X,1)*mask_ratio)
+        pos = randperm(size(X,1))[1:n_mask]
+        @inbounds for row in pos
+            y[row,col] = X[row,col]
+            X[row,col] = MASK_ID
+        end
+    end
+    return y
+end
+
+# X_train_masked, y_train_masked = mask_input(X_train)
+X_test_masked, y_test_masked = mask_input(X_test)
+
+# aaa = []
+# for col in 1:size(y_train_masked, 2)
+#     sorted = sort(y_train_masked[:, col])
+#     nonmasked = sorted[end]
+#     push!(aaa, nonmasked)
+# end
+# using StatsBase
+# counts = countmap(aaa)
+# ~ 60-80 of each # from 1:978
+
+#######################################################################################################################################
+
+### HERE WE GIVE BOTH TRAIN/TEST SAME MASK FOR DEBUGGING :( (same gene/# across columns, diff rows/ranks)
+
+# function mask_input(X::Matrix{Int64}; mask_ratio=0.1)
+#     X_masked = copy(X)
+#     mask_labels = fill(-100, size(X))  # -100 = ignore, not masked
+#     all_values = unique(X)
+#     all_values = setdiff(all_values, MASK_ID)  # exclude mask token if present
+#     num_masked_values = ceil(Int, length(all_values) * mask_ratio)
+#     masked_values = randperm(length(all_values))[1:num_masked_values]
+#     masked_values = all_values[masked_values]
+#     for j in 1:size(X, 2)  # for each column
+#         for i in 1:size(X, 1)  # for each row
+#             if X[i, j] in masked_values
+#                 mask_labels[i, j] = X[i, j]
+#                 X_masked[i, j] = MASK_ID
+#             end
 #         end
 #     end
-#     return y
+#     return X_masked, mask_labels
 # end
 
-X_train_masked, y_train_masked = mask_input(X_train)
-X_test_masked, y_test_masked = mask_input(X_test)
+
+# X_masked_full, y_masked_full = mask_input(X, mask_ratio=mask_ratio)
+
+# # split
+# test_ratio = 0.2
+# n_total = size(X, 2)
+# indices = shuffle(1:n_total)
+# test_size = floor(Int, n_total * test_ratio)
+# test_indices = indices[1:test_size]
+# train_indices = indices[test_size+1:end]
+
+# # now we got the same mask! yay.
+# X_train_masked = X_masked_full[:, train_indices]
+# y_train_masked = y_masked_full[:, train_indices]
+
+# X_test_masked = X_masked_full[:, test_indices]
+# y_test_masked = y_masked_full[:, test_indices]
+
+#######################################################################################################################################
 
 ### training
 
 n_genes, n_samples = size(X)
-batch_size = 32
-n_epochs = 30
+batch_size = 64
+n_epochs = 100
 embed_dim = 64
-hidden_dim = 64
-n_heads = 1
-n_layers = 4
-drop_prob = 0.05
+hidden_dim = 256
+n_heads = 2
+n_layers = 8
+drop_prob = 0.15
 lr = 0.001
 
 model = Model(
@@ -299,68 +352,53 @@ test_accuracies = Float32[]
 
 for epoch in ProgressBar(1:n_epochs)
 
-    epoch_losses = Float32[]
+epoch_losses = Float32[]
 
-    # # dynamic masking here
-    # X_train_masked = copy(X_train)
-    # y_train_masked = mask_input_dyn(X_train_masked)
+# dynamic masking here
+X_train_masked = copy(X_train)
+y_train_masked = mask_input_dyn(X_train_masked)
 
-    for start_idx in 1:batch_size:size(X_train_masked, 2)
-        end_idx = min(start_idx + batch_size - 1, size(X_train_masked, 2))
-        x_gpu = gpu(X_train_masked[:, start_idx:end_idx])
-        y_gpu = gpu(y_train_masked[:, start_idx:end_idx])
-        # y_batch_sparse = get_sparse_batch(y_train_masked, start_idx, end_idx)
-        
-        loss_val, grads = Flux.withgradient(model) do m
-            loss(m, x_gpu, y_gpu, "train")
-        end
-        Flux.update!(opt, model, grads[1])
-        loss_val = loss(model, x_gpu, y_gpu, "train")
-        push!(epoch_losses, loss_val)
-    end
-
-    push!(train_losses, mean(epoch_losses))
+for start_idx in 1:batch_size:size(X_train_masked, 2)
+    end_idx = min(start_idx + batch_size - 1, size(X_train_masked, 2))
+    x_gpu = gpu(X_train_masked[:, start_idx:end_idx])
+    y_gpu = gpu(y_train_masked[:, start_idx:end_idx])
+    # y_batch_sparse = get_sparse_batch(y_train_masked, start_idx, end_idx)
     
-    test_epoch_losses = Float32[]
-    tp = 0
-    totals = 0
-
-    for start_idx in 1:batch_size:size(X_test_masked, 2)
-        end_idx = min(start_idx + batch_size - 1, size(X_test_masked, 2))
-        x_gpu = gpu(X_test_masked[:, start_idx:end_idx])
-        y_gpu = gpu(y_test_masked[:, start_idx:end_idx])
-
-        test_loss_val, logits_masked, y_masked = loss(model, x_gpu, y_gpu, "test")
-        push!(test_epoch_losses, test_loss_val)
-
-        preds_masked = Flux.onecold(logits_masked) |> cpu
-
-        tp += sum(preds_masked .== cpu(y_masked)) # true positives
-        totals += length(y_masked) # total samples
+    loss_val, grads = Flux.withgradient(model) do m
+        loss(m, x_gpu, y_gpu, "train")
     end
-
-    test_acc = tp / totals
-    push!(test_losses, mean(test_epoch_losses))
-    push!(test_accuracies, test_acc)
-
+    Flux.update!(opt, model, grads[1])
+    loss_val = loss(model, x_gpu, y_gpu, "train")
+    push!(epoch_losses, loss_val)
 end
 
+push!(train_losses, mean(epoch_losses))
+
+test_epoch_losses = Float32[]
+tp = 0
+totals = 0
+
+for start_idx in 1:batch_size:size(X_test_masked, 2)
+    end_idx = min(start_idx + batch_size - 1, size(X_test_masked, 2))
+    x_gpu = gpu(X_test_masked[:, start_idx:end_idx])
+    y_gpu = gpu(y_test_masked[:, start_idx:end_idx])
+
+    test_loss_val, logits_masked, y_masked = loss(model, x_gpu, y_gpu, "test")
+    push!(test_epoch_losses, test_loss_val)
+
+    preds_masked = Flux.onecold(logits_masked) |> cpu
+
+    tp += sum(preds_masked .== cpu(y_masked)) # true positives
+    totals += length(y_masked) # total samples
+end
+
+test_acc = tp / totals
+push!(test_losses, mean(test_epoch_losses))
+push!(test_accuracies, test_acc)
+end
+
+
 ### evaluation metrics
-
-# # make dir if not present already
-# save_dir = joinpath("plots", "untrt", "masked", "dyn_mask")
-# mkpath(save_dir)
-
-# Plots.plot(1:n_epochs, train_losses; label="training loss",
-#      xlabel="epoch", ylabel="loss", title="training vs validation loss", lw=2)
-# Plots.plot!(1:n_epochs, test_losses;  label="test loss", lw=2)
-# png_path = joinpath(save_dir, "trainval_loss.png")
-# savefig(png_path)
-
-# df = DataFrame(test_accuracy = test_accuracies)
-# csv_path = joinpath(save_dir, "test_accuracies.csv")
-# CSV.write(csv_path, df)
-
 
 # mk dir
 timestamp = Dates.format(now(), "yyyy-mm-dd_HH-MM")
@@ -386,10 +424,10 @@ CSV.write(joinpath(save_dir, "test_accuracies.csv"), df)
 params_txt = joinpath(save_dir, "params.txt")
 open(params_txt, "w") do io
     println(io, "PARAMETERS:")
-    println(io, "###########")
+    println(io, "########### this was on smaug")
     println(io, "dataset = untrt")
     println(io, "masking_ratio = $mask_ratio")
-    println(io, "NO DYNAMIC MASKING")
+    println(io, "WITH DYNAMIC MASKING")
     println(io, "batch_size = $batch_size")
     println(io, "n_epochs = $n_epochs")
     println(io, "embed_dim = $embed_dim")
@@ -398,5 +436,62 @@ open(params_txt, "w") do io
     println(io, "n_layers = $n_layers")
     println(io, "learning_rate = $lr")
     println(io, "dropout_probability = $drop_prob")
-    println(io, "ADDITIONAL NOTES: scaling model layers up, nheads down")
+    println(io, "ADDITIONAL NOTES: increasing parameters EVEN FURTHER for checking which ranks accuracy is high/low")
 end
+
+
+# look @ accuracy BY RANK
+rank_tp = zeros(Int, n_genes)
+rank_totals = zeros(Int, n_genes)
+Flux.testmode!(model)
+
+for start_idx in 1:batch_size:size(X_test_masked, 2)
+    end_idx = min(start_idx + batch_size - 1, size(X_test_masked, 2))
+    x_gpu = gpu(X_test_masked[:, start_idx:end_idx])
+    y_gpu = gpu(y_test_masked[:, start_idx:end_idx])
+
+    logits = model(x_gpu)
+    logits_flat = reshape(logits, size(logits, 1), :)
+    y_flat = vec(y_gpu)
+    mask = y_flat .!= -100
+    
+    logits_masked = logits_flat[:, mask]
+    y_masked = y_flat[mask]
+    preds_masked = Flux.onecold(logits_masked)
+
+    batch_masked_indices = findall(y_gpu .!= -100)
+
+    cpu_preds = cpu(preds_masked)
+    cpu_y = cpu(y_masked)
+    cpu_indices = cpu(batch_masked_indices)
+
+    for i in 1:length(cpu_y)
+        rank = cpu_indices[i][1]
+        if cpu_preds[i] == cpu_y[i]
+            rank_tp[rank] += 1
+        end
+        rank_totals[rank] += 1
+    end
+end
+
+rank_accuracies = zeros(Float32, n_genes)
+for i in 1:n_genes
+    if rank_totals[i] > 0
+        rank_accuracies[i] = rank_tp[i] / rank_totals[i]
+    end
+end
+
+rank_plot = Plots.plot(
+    1:n_genes, 
+    rank_accuracies;
+    xlabel="gene rank (1=highest exp)",
+    ylabel="accuracy",
+    title="masked prediction accuracy by rank",
+    label="accuracy",
+    legend=:bottomleft,
+    lw=2
+)
+
+savefig(joinpath(save_dir, "rank_accuracy.png"))
+println("rank-based accuracy plot saved to $(joinpath(save_dir, "rank_accuracy.png"))")
+println("smaug finished: trying 10% pos masked but diff across epochs/samples/test.\nyay!")

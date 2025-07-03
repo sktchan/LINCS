@@ -2,7 +2,7 @@
 
 julia_version = "1.11.5"
 manifest_format = "2.0"
-project_hash = "ff36abccde13cd1bb11071375b156efd458b5f4b"
+project_hash = "f134913694948824e6043ca416b7e47e169dc85e"
 
 [[deps.AbstractFFTs]]
 deps = ["LinearAlgebra"]
@@ -898,6 +898,12 @@ deps = ["Random", "RegistryInstances", "RegistryTools", "TOML", "UUIDs"]
 git-tree-sha1 = "80d096310838ebd9dfbe7934034da35c26ff4df4"
 uuid = "89398ba2-070a-4b16-a995-9893c55d93cf"
 version = "0.5.7"
+
+[[deps.Loess]]
+deps = ["Distances", "LinearAlgebra", "Statistics", "StatsAPI"]
+git-tree-sha1 = "f749e7351f120b3566e5923fefdf8e52ba5ec7f9"
+uuid = "4345ca2d-374a-55d4-8d30-97f9976e7612"
+version = "0.6.4"
 
 [[deps.LogExpFunctions]]
 deps = ["DocStringExtensions", "IrrationalConstants", "LinearAlgebra"]

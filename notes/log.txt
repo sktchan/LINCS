@@ -178,3 +178,21 @@ june 12 trying dynamic masking;
 but recent work finds that decreasing the rate during training is even better 
 (to try later!!! aka scheduler)**
 ***dynamic on the train, static on the test***
+
+jun 16 - tried to only mask 1 position; if it can't predict just the missing # from 1-978, then it's dumb.
+- the issue here might be that the test mask is different from the train mask; 
+thus w/o dynamic masking, the train learns a single value each time, and the test provides a new value not seen before..?
+
+also trying to profile the memory b/c 25min per epoch is way too long;
+Profile.Allocs.@profile sample_rate=1 begin/end is taking wayyyyy too long too (~3hrs so far) to run in the REPL.. maybe
+is there another way?
+
+*also what takes 26h on kraken takes 4h on smaug...
+there seems to be slightly better trainval loss using higher embed dim --> try higher dim
+
+jun 20 - based on the results from smaug, 2025-06-19_21-48
+there seems to be an issue with learning diff masked tokens (1 per sample) across the whole dataset
+it works if we want to do the same say, 5 masks across the whole dataset (albeit at only a 84% accuracy for some reason)
+1. double check masking function - ensure that it is correct
+2. scale up learning rate..? not sure what else to do here
+the training masks have sufficinet examples to learn from i think (60 per label) so what is going wrong?
