@@ -1,0 +1,14 @@
+PARAMETERS:
+########### this was on smaug
+dataset = untrt
+masking_ratio = 0.15
+WITH DYNAMIC MASKING
+batch_size = 64
+n_epochs = 100
+embed_dim = 64
+hidden_dim = 256
+n_heads = 2
+n_layers = 8
+learning_rate = 0.001
+dropout_probability = 0.15
+ADDITIONAL NOTES: increasing parameters EVEN FURTHER for checking which ranks accuracy is high/low

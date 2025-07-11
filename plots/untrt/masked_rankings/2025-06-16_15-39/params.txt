@@ -1,0 +1,14 @@
+PARAMETERS:
+###########
+dataset = untrt
+masking_ratio = 0.001
+NO DYNAMIC MASKING
+batch_size = 32
+n_epochs = 30
+embed_dim = 64
+hidden_dim = 64
+n_heads = 4
+n_layers = 2
+learning_rate = 0.001
+dropout_probability = 0.05
+ADDITIONAL NOTES: here, masking only 1 position; if it can't predict just the missing value then there's something wrong with the model!

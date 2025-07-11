@@ -1,0 +1,13 @@
+PARAMETERS:
+###########
+dataset = untrt
+masking_ratio = 0.15
+WITH DYNAMIC MASKING
+batch_size = 32
+n_epochs = 80
+embed_dim = 64
+hidden_dim = 64
+n_heads = 4
+n_layers = 2
+learning_rate = 0.001
+dropout_probability = 0.05

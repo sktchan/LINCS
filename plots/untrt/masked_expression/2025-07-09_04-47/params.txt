@@ -1,0 +1,16 @@
+PARAMETERS:
+########### this was on smaug
+dataset = untrt
+masking_ratio = 0.15
+mask_value = 0.0
+NO DYNAMIC MASKING
+batch_size = 128
+n_epochs = 50
+embed_dim = 128
+hidden_dim = 64
+n_heads = 1
+n_layers = 4
+learning_rate = 0.0005
+dropout_probability = 0.05
+ADDITIONAL NOTES: trying to reduce the prev overfitting and INCR MASK RATIO!
+run_time = 10 hours and 26 minutes
