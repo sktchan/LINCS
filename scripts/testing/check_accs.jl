@@ -493,5 +493,3 @@ rank_plot = Plots.plot(
 )
 
 savefig(joinpath(save_dir, "rank_accuracy.png"))
-println("rank-based accuracy plot saved to $(joinpath(save_dir, "rank_accuracy.png"))")
-println("smaug finished: trying 10% pos masked but diff across epochs/samples/test.\nyay!")
