@@ -1,0 +1,17 @@
+EPOCH @ SAVE: 420
+TIMESTAMP: 2025-07-16_11-31-16
+--------------------
+PARAMETERS:
+dataset = untrt
+masking_ratio = 0.1
+NO DYNAMIC MASKING
+batch_size = 128
+embed_dim = 128
+hidden_dim = 64
+n_heads = 1
+n_layers = 4
+learning_rate = 0.001
+dropout_probability = 0.05
+--------------------
+ADDITIONAL NOTES: good params (higher layers, embed dim) for first indefinite run!
+elapsed time @ save: 111 hours and 57 minutes
