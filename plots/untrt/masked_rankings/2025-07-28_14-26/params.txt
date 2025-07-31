@@ -1,0 +1,15 @@
+PARAMETERS:
+########### this was on smaug
+dataset = untrt
+masking_ratio = 0.1
+NO DYNAMIC MASKING
+batch_size = 128
+n_epochs = 300
+embed_dim = 128
+hidden_dim = 256
+n_heads = 2
+n_layers = 4
+learning_rate = 0.001
+dropout_probability = 0.05
+ADDITIONAL NOTES: tracking rank error instead of accuracy for longer run! cannot incr hidden_dim & n_heads more than 07-22 run
+run_time = 115 hours and 58 minutes

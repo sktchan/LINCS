@@ -1,0 +1,17 @@
+PARAMETERS:
+########### this was on smaug
+dataset = untrt
+masking_ratio = 0.1
+mask_value = -1.0
+NO DYNAMIC MASKING
+batch_size = 128
+n_epochs = 10
+embed_dim = 128
+hidden_dim = 256
+n_heads = 2
+n_layers = 4
+learning_rate = 0.001
+dropout_probability = 0.05
+ADDITIONAL NOTES: rerunning w same params as prev but fixed scatter plot, loss, and mask_token
+run_time = 2 hours and 47 minutes
+correlation = 0.9278784
