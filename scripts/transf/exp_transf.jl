@@ -140,7 +140,7 @@ function Model(;
     classifier = Flux.Chain(
         Flux.Dense(embed_dim => embed_dim, gelu),
         Flux.LayerNorm(embed_dim),
-        Flux.Dense(embed_dim => n_classes) #!# n_classes = 1
+        Flux.Dense(embed_dim => 1) #!# 1 value returned
         )
 
     return Model(projection, pos_encoder, pos_dropout, transformer, classifier)
@@ -194,8 +194,8 @@ X_train, X_test = split_data(X, 0.2)
 
 ### masking for raw expression values
 
-const MASK_VALUE = 0.0f0 #!# float for the mask value in the input
-mask_ratio=0.15
+const MASK_VALUE = -1.0f0 #!# float for the mask value in the input
+mask_ratio=0.1
 
 function mask_input(X::Matrix{Float32}; mask_ratio=mask_ratio)
     X_masked = copy(X)
@@ -224,13 +224,13 @@ X_test_masked, y_test_masked = mask_input(X_test)
 # n_genes, n_samples = size(X) # n_genes already defined
 n_samples = size(X, 2)
 batch_size = 128
-n_epochs = 50
+n_epochs = 30
 embed_dim = 128
-hidden_dim = 64
-n_heads = 1
+hidden_dim = 256
+n_heads = 2
 n_layers = 4
 drop_prob = 0.05
-lr = 0.0005
+lr = 0.001
 
 model = Model(
     seq_len=n_genes,
@@ -332,33 +332,48 @@ savefig(joinpath(save_dir, "trainval_loss.png"))
 
 all_preds = Float32[]
 all_trues = Float32[]
+test_epoch_losses = Float32[]
 
 for start_idx in 1:batch_size:size(X_test_masked, 2)
     end_idx = min(start_idx + batch_size - 1, size(X_test_masked, 2))
     x_gpu = gpu(X_test_masked[:, start_idx:end_idx])
     y_gpu = gpu(y_test_masked[:, start_idx:end_idx])
-    _, preds_masked, y_masked = loss(model, x_gpu, y_gpu, "test")
+    test_loss_val, preds_masked, y_masked = loss(model, x_gpu, y_gpu, "test")
+    push!(test_epoch_losses, test_loss_val)
     append!(all_preds, cpu(preds_masked))
     append!(all_trues, cpu(y_masked))
 end
 
 Plots.scatter(all_trues, all_preds,
-        label="preds",
-        xlabel="true exp",
-        ylabel="pred exp",
+        label="predictions",
+        xlabel="true exp values",
+        ylabel="predicted exp values",
         title="pred vs true exp values",
         alpha=0.3,
-        aspect_ratio=:equal)
+        aspect_ratio=:equal,
+        markersize=2,
+        xlims=(0, 16))
 
 min_val = min(minimum(all_trues), minimum(all_preds))
 max_val = max(maximum(all_trues), maximum(all_preds))
 
 Plots.plot!([min_val, max_val], [min_val, max_val],
       label="y=x",
-      color=:red,
       linestyle=:dash,
       lw=2)
+
+correlation = cor(all_trues, all_preds)
 savefig(joinpath(save_dir, "prediction_scatter_plot.png"))
+
+# log data
+df = DataFrame(df = DataFrame(
+    epoch = 1:n_epochs,
+    train_loss = train_losses,
+    test_loss = test_losses,
+    all_preds = all_preds,
+    all_trues = all_trues
+))
+CSV.write(joinpath(save_dir, "results.csv"), df)
 
 end_time = now()
 run_time = end_time - start_time
@@ -383,6 +398,7 @@ open(params_txt, "w") do io
     println(io, "n_layers = $n_layers")
     println(io, "learning_rate = $lr")
     println(io, "dropout_probability = $drop_prob")
-    println(io, "ADDITIONAL NOTES: trying to reduce the prev overfitting and INCR MASK RATIO!")
+    println(io, "ADDITIONAL NOTES: running with diff loss update and sam params as rank transf")
     println(io, "run_time = $(run_hours) hours and $(run_minutes) minutes")
+    println(io, "correlation = $correlation")
 end

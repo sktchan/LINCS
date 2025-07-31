@@ -196,3 +196,38 @@ it works if we want to do the same say, 5 masks across the whole dataset (albeit
 1. double check masking function - ensure that it is correct
 2. scale up learning rate..? not sure what else to do here
 the training masks have sufficinet examples to learn from i think (60 per label) so what is going wrong?
+
+jul 24 - speed/memory optimization
+- lux.jl is equivalent of jax in python (uses xla backend)
+- unrelated, but wb a splitted data struct..? (what lea uses)
+
+jul 25 - exp masking...?
+1. can you embed counts? how would that work
+2. needs to be a regression output (1 value) rather than a vector of probabilities per class?
+3. loss needs to be defined differently
+4. should it just be a dense network? does MHA work on 
+
+jul 30 - exp masking
+TODO:
+- Dense layer instead of Flux.Embedding 
+    - this is b/c below static vs. dynamic Embeddings
+    - dense layer stores f(x) = Wx + b, where W and b are learned during training for all genes/samples
+    - W is a matrix, b is a vector and these are multiplied by the input x to output f(x) the embeddign vector 
+- MHA still works with non-tokenized values!
+    - model learns the meaning of the expression levels rather than the gene identity/ranks?
+- mask token should be 0.0 after normalizing input
+- MSE loss
+- regression output to 1 value
+
+Static Embeddings (like Word2Vec or Flux.Embedding): 
+- The model learns one single, fixed vector for each unique token (e.g., the word "bank"). 
+- The goal is to learn the meaning of the token itself by averaging its usage across thousands of different contexts.
+Dynamic Feature Representation (Your Model): 
+- Your model does not learn a static vector for "Gene 1". 
+- Instead, it learns a function that maps any given expression value to a vector representation.
+
+9PM - edit to exp masking
+- had to move loss calc to before model update - resulted in lower loss in test than train
+- change masking val to -1, apparenlty there are exp elvels of 0 in the original dataset?
+
+***shoudl make a plot similar to this scatter plot for check_error.jl file
