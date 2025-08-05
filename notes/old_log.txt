@@ -173,13 +173,13 @@ https://medium.com/data-science/sparse-matrices-in-pytorch-part-2-gpus-fd9cc0725
 - above state that there should be about 1% or less sparsity for GPU sparse matrices to be efficient
 - due to the need to repeatedly transfer data between CPU and GPU and sparse slicing operations in batching
 
-june 12 trying dynamic masking;
+june 12, 2025 trying dynamic masking;
 **RoBERTa shows that masking a different subset every epoch already helps, 
 but recent work finds that decreasing the rate during training is even better 
 (to try later!!! aka scheduler)**
 ***dynamic on the train, static on the test***
 
-jun 16 - tried to only mask 1 position; if it can't predict just the missing # from 1-978, then it's dumb.
+jun 16, 2025 - tried to only mask 1 position; if it can't predict just the missing # from 1-978, then it's dumb.
 - the issue here might be that the test mask is different from the train mask; 
 thus w/o dynamic masking, the train learns a single value each time, and the test provides a new value not seen before..?
 
@@ -190,24 +190,24 @@ is there another way?
 *also what takes 26h on kraken takes 4h on smaug...
 there seems to be slightly better trainval loss using higher embed dim --> try higher dim
 
-jun 20 - based on the results from smaug, 2025-06-19_21-48
+jun 20, 2025 - based on the results from smaug, 2025-06-19_21-48
 there seems to be an issue with learning diff masked tokens (1 per sample) across the whole dataset
 it works if we want to do the same say, 5 masks across the whole dataset (albeit at only a 84% accuracy for some reason)
 1. double check masking function - ensure that it is correct
 2. scale up learning rate..? not sure what else to do here
 the training masks have sufficinet examples to learn from i think (60 per label) so what is going wrong?
 
-jul 24 - speed/memory optimization
+jul 24, 2025 - speed/memory optimization
 - lux.jl is equivalent of jax in python (uses xla backend)
 - unrelated, but wb a splitted data struct..? (what lea uses)
 
-jul 25 - exp masking...?
+jul 25, 2025 - exp masking...?
 1. can you embed counts? how would that work
 2. needs to be a regression output (1 value) rather than a vector of probabilities per class?
 3. loss needs to be defined differently
 4. should it just be a dense network? does MHA work on 
 
-jul 30 - exp masking
+jul 30, 2025 - exp masking
 TODO:
 - Dense layer instead of Flux.Embedding 
     - this is b/c below static vs. dynamic Embeddings
@@ -231,3 +231,286 @@ Dynamic Feature Representation (Your Model):
 - change masking val to -1, apparenlty there are exp elvels of 0 in the original dataset?
 
 ***shoudl make a plot similar to this scatter plot for check_error.jl file
+
+aug 1, 2025 - pre lab-meeting
+***need to fix the logging of params for predstrues.csv and params.txt ; didn't save in the last couple runs
+
+aug 4, 2025 - debug + seb loss issue
+- runnign on GPU 2 for indef run - rerun for seb
+- need to 
+    1. figure out logging for test/train - is it diff than what's in the slides?
+    2. debug original structure typing
+    3. fix logging of params for predstrues.csv and params.txt when doing input comparison plots
+    4. fix progressbar for indef_run.jl (why is it out of 628, repeats for each epoch???)
+
+- 08-04 run is original test/loss definitions from creating 720ep graph
+- changed code to use mask_transf code in the while loop
+- so Flux.withgradient = 1st loss calc --> update! --> second loss calc
+
+aug 5, 2025 - debug
+original structure:
+struct PosEnc
+    pe_matrix::CuArray{Float32,2}
+end
+
+function PosEnc(embed_dim::Int, max_len::Int) # max_len is usually maximum length of sequence but here it is just len(genes)
+    pe_matrix = Matrix{Float32}(undef, embed_dim, max_len)
+    for pos in 1:max_len, i in 1:embed_dim
+        angle = pos / (10000^(2*(div(i-1,2))/embed_dim))
+        if mod(i, 2) == 1
+            pe_matrix[i,pos] = sin(angle) # odd indices
+        else
+            pe_matrix[i,pos] = cos(angle) # even indices
+        end
+    end
+    return PosEnc(cu(pe_matrix))
+end
+
+Flux.@functor PosEnc
+
+function (pe::PosEnc)(input::Float32Matrix3DType)
+    seq_len = size(input,2)
+    return input .+ pe.pe_matrix[:,1:seq_len] # adds positional encoding to input embeddings
+end
+
+### building transformer section
+
+struct Transf
+    mha::Flux.MultiHeadAttention
+    att_dropout::Flux.Dropout
+    att_norm::Flux.LayerNorm # this is the normalization aspect
+    mlp::Flux.Chain
+    mlp_norm::Flux.LayerNorm
+end
+
+function Transf(
+    embed_dim::Int, 
+    hidden_dim::Int; 
+    n_heads::Int, 
+    dropout_prob::Float64
+    )
+
+    mha = Flux.MultiHeadAttention((embed_dim, embed_dim, embed_dim) => (embed_dim, embed_dim) => embed_dim, 
+                                    nheads=n_heads, 
+                                    dropout_prob=dropout_prob
+                                    )
+
+    att_dropout = Flux.Dropout(dropout_prob)
+    
+    att_norm = Flux.LayerNorm(embed_dim)
+    
+    mlp = Flux.Chain(
+        Flux.Dense(embed_dim => hidden_dim, gelu),
+        Flux.Dropout(dropout_prob),
+        Flux.Dense(hidden_dim => embed_dim),
+        Flux.Dropout(dropout_prob)
+        )
+    mlp_norm = Flux.LayerNorm(embed_dim)
+
+    return Transf(mha, att_dropout, att_norm, mlp, mlp_norm)
+end
+
+Flux.@functor Transf
+
+function (tf::Transf)(input::Float32Matrix3DType) # input shape: embed_dim × seq_len × batch_size
+    normed = tf.att_norm(input)
+    atted = tf.mha(normed, normed, normed)[1] # outputs a tuple (a, b)
+    att_dropped = tf.att_dropout(atted)
+    residualed = input + att_dropped
+    res_normed = tf.mlp_norm(residualed)
+
+    embed_dim, seq_len, batch_size = size(res_normed)
+    reshaped = reshape(res_normed, embed_dim, seq_len * batch_size) # dense layers expect 2D inputs
+    mlp_out = tf.mlp(reshaped)
+    mlp_out_reshaped = reshape(mlp_out, embed_dim, seq_len, batch_size)
+    
+    tf_output = residualed + mlp_out_reshaped
+    return tf_output
+end
+
+### full model as << ranked data --> token embedding --> position embedding --> transformer --> classifier head >>
+
+struct Model
+    embedding::Flux.Embedding
+    pos_encoder::PosEnc
+    pos_dropout::Flux.Dropout
+    transformer::Flux.Chain
+    classifier::Flux.Chain
+end
+
+function Model(;
+    input_size::Int,
+    embed_dim::Int,
+    n_layers::Int,
+    n_classes::Int,
+    n_heads::Int,
+    hidden_dim::Int,
+    dropout_prob::Float64
+    )
+
+    embedding = Flux.Embedding(input_size => embed_dim)
+
+    pos_encoder = PosEnc(embed_dim, input_size)
+
+    pos_dropout = Flux.Dropout(dropout_prob)
+
+    transformer = Flux.Chain(
+        [Transf(embed_dim, hidden_dim; n_heads, dropout_prob) for _ in 1:n_layers]...
+        )
+
+    classifier = Flux.Chain(
+        Flux.Dense(embed_dim => embed_dim, gelu),
+        Flux.LayerNorm(embed_dim),
+        Flux.Dense(embed_dim => n_classes)
+        )
+
+    return Model(embedding, pos_encoder, pos_dropout, transformer, classifier)
+end
+
+Flux.@functor Model
+
+function (model::Model)(input::IntMatrix2DType)
+    embedded = model.embedding(input)
+    encoded = model.pos_encoder(embedded)
+    encoded_dropped = model.pos_dropout(encoded)
+    transformed = model.transformer(encoded_dropped)
+    # pooled = dropdims(mean(transformed; dims=2), dims=2)
+    logits_output = model.classifier(transformed)
+    return logits_output
+end
+
+re-typed structure:
+struct PosEnc{U<:AbstractMatrix}
+    pe_matrix::U
+end
+
+function PosEnc(embed_dim::Int, max_len::Int) # max_len is usually maximum length of sequence but here it is just len(genes)
+    pe_matrix = Matrix{Float32}(undef, embed_dim, max_len)
+    for pos in 1:max_len, i in 1:embed_dim
+        angle = pos / (10000^(2*(div(i-1,2))/embed_dim))
+        if mod(i, 2) == 1
+            pe_matrix[i,pos] = sin(angle) # odd indices
+        else
+            pe_matrix[i,pos] = cos(angle) # even indices
+        end
+    end
+    return PosEnc(pe_matrix)
+end
+
+Flux.@functor PosEnc
+
+function (pe::PosEnc)(input::Float32Matrix3DType)
+    seq_len = size(input,2)
+    return input .+ pe.pe_matrix[:,1:seq_len] # adds positional encoding to input embeddings
+end
+
+### building transformer section
+
+struct Transf{MHA<:Flux.MultiHeadAttention, D<:Flux.Dropout, LN<:Flux.LayerNorm, C<:Flux.Chain}
+    mha::MHA
+    att_dropout::D
+    att_norm::LN
+    mlp::C
+    mlp_norm::LN
+end
+
+function Transf(
+    embed_dim::Int, 
+    hidden_dim::Int; 
+    n_heads::Int, 
+    dropout_prob::Float64
+    )
+
+    mha = Flux.MultiHeadAttention((embed_dim, embed_dim, embed_dim) => (embed_dim, embed_dim) => embed_dim, 
+                                    nheads=n_heads, 
+                                    dropout_prob=dropout_prob
+                                    )
+
+    att_dropout = Flux.Dropout(dropout_prob)
+    
+    att_norm = Flux.LayerNorm(embed_dim)
+    
+    mlp = Flux.Chain(
+        Flux.Dense(embed_dim => hidden_dim, gelu),
+        Flux.Dropout(dropout_prob),
+        Flux.Dense(hidden_dim => embed_dim),
+        Flux.Dropout(dropout_prob)
+        )
+    mlp_norm = Flux.LayerNorm(embed_dim)
+
+    return Transf(mha, att_dropout, att_norm, mlp, mlp_norm)
+end
+
+Flux.@functor Transf
+
+function (tf::Transf)(input::Float32Matrix3DType) # input shape: embed_dim × seq_len × batch_size
+    normed = tf.att_norm(input)
+    atted, _ = tf.mha(normed, normed, normed) # outputs a tuple (a, b)
+    att_dropped = tf.att_dropout(atted)
+    residualed = input + att_dropped
+    res_normed = tf.mlp_norm(residualed)
+
+    embed_dim, seq_len, batch_size = size(res_normed)
+    reshaped = reshape(res_normed, embed_dim, seq_len * batch_size) # dense layers expect 2D inputs
+    mlp_out = tf.mlp(reshaped)
+    mlp_out_reshaped = reshape(mlp_out, embed_dim, seq_len, batch_size)
+    
+    tf_output = residualed + mlp_out_reshaped
+    return tf_output
+end
+
+struct Model{E<:Flux.Embedding, P<:PosEnc, D<:Flux.Dropout, T<:Flux.Chain, C<:Flux.Chain}
+    embedding::E
+    pos_encoder::P
+    pos_dropout::D
+    transformer::T
+    classifier::C
+end
+
+function Model(;
+    input_size::Int,
+    embed_dim::Int,
+    n_layers::Int,
+    n_classes::Int,
+    n_heads::Int,
+    hidden_dim::Int,
+    dropout_prob::Float64
+    )
+
+    embedding = Flux.Embedding(input_size => embed_dim)
+
+    pos_encoder = PosEnc(embed_dim, input_size)
+
+    pos_dropout = Flux.Dropout(dropout_prob)
+
+    transformer = Flux.Chain(
+    (Transf(embed_dim, hidden_dim; n_heads, dropout_prob) for _ in 1:n_layers)...
+    )
+
+    classifier = Flux.Chain(
+        Flux.Dense(embed_dim => embed_dim, gelu),
+        Flux.LayerNorm(embed_dim),
+        Flux.Dense(embed_dim => n_classes)
+        )
+
+    return Model(embedding, pos_encoder, pos_dropout, transformer, classifier)
+end
+
+Flux.@functor Model
+
+function (model::Model)(input::T) where {T<:IntMatrix2DType} 
+    # there is an issue here - where type is Any from the Flux portion
+    # now - if Flux is causing issues, go into source code and redefine as above:
+    # (m::Embedding)(x::T) where {T<:AbstractArray} = reshape(m(vec(x)), :, size(x)...), copied from Flux source code
+    # AND
+    # input::T where T<:type, allows it to be distinguished as a subtype of the input type
+    # should theoretically be able to avoid Anys, and be type-stable!
+    embedded = model.embedding(input)
+    encoded = model.pos_encoder(embedded)
+    encoded_dropped = model.pos_dropout(encoded)
+    transformed = model.transformer(encoded_dropped)
+    pooled = dropdims(mean(transformed; dims=2), dims=2)
+    logits_output = model.classifier(pooled)
+    return logits_output
+    return embedded
+end
