@@ -15,7 +15,7 @@ Pkg.activate("/home/golem/scratch/chans/lincs")
 # using Infiltrator
 using LincsProject, DataFrames, CSV, Dates, JSON, StatsBase, JLD2, SparseArrays, Dates, Printf, Profile
 using Flux, Random, OneHotArrays, CategoricalArrays, ProgressBars, CUDA, Statistics, Plots, CairoMakie, LinearAlgebra
-CUDA.device!(0)
+CUDA.device!(2)
 
 start_time = now()
 
@@ -256,27 +256,22 @@ model = Model(
 opt = Flux.setup(Adam(lr), model)
 
 # loss/metrics function calcualtion
-function masked_loss_and_metrics(model::Model, x, y)
+function loss(model::Model, x, y, mode::String)
     logits = model(x)  # (n_classes, seq_len, batch_size)
     logits_flat = reshape(logits, size(logits, 1), :) # (n_classes, seq_len*batch_size)
     y_flat = vec(y) # (seq_len*batch_size) column vec
 
     mask = y_flat .!= -100 # bit vec, where sum = n_masked
-
-    # if no tokens are masked in the batch
-    if !any(mask)
-        return (0.0f0, 0, 0)
-    end
-
     logits_masked = logits_flat[:, mask] # (n_classes, n_masked)
     y_masked = y_flat[mask] # (n_masked) column vec
+    y_oh = Flux.onehotbatch(y_masked, 1:n_classes) # (n_classes, n_masked)
 
-    loss = Flux.logitcrossentropy(logits_masked, Flux.onehotbatch(y_masked, 1:n_classes))
-    preds_masked = Flux.onecold(logits_masked)
-    tp = sum(preds_masked .== y_masked)
-    total_masked = length(y_masked)
-
-    return loss, tp, total_masked
+    if mode == "train"
+        return Flux.logitcrossentropy(logits_masked, y_oh) 
+    end
+    if mode == "test"
+        return Flux.logitcrossentropy(logits_masked, y_oh), logits_masked, y_masked
+    end
 end
 
 train_losses = Float32[]
@@ -288,32 +283,32 @@ test_accuracies = Float32[]
 epoch = 0
 while true
     global epoch += 1
-    println("\n--- starting epoch $epoch ---")
 
+    ### start train
     epoch_train_losses = Float32[]
     total_train_tp = 0
     total_train_masked = 0
 
-    progress = ProgressBar(1:batch_size:size(X_train_masked, 2))
-    for start_idx in progress
+    for start_idx in 1:batch_size:size(X_train_masked, 2)
         end_idx = min(start_idx + batch_size - 1, size(X_train_masked, 2))
         x_batch = gpu(X_train_masked[:, start_idx:end_idx])
         y_batch = gpu(y_train_masked[:, start_idx:end_idx])
 
-        loss_val, grads = Flux.withgradient(model) do m
-            l, _, _ = masked_loss_and_metrics(m, x_batch, y_batch)
-            l
+        _, grads = Flux.withgradient(model) do m
+            loss(m, x_batch, y_batch, "train")
         end
         Flux.update!(opt, model, grads[1])
-
-        # recalc metrics other than loss
-        _, tp, total_masked = masked_loss_and_metrics(model, x_batch, y_batch)
-
+        loss_val = loss(model, x_batch, y_batch, "train")
+        
         push!(epoch_train_losses, loss_val)
-        total_train_tp += tp
-        total_train_masked += total_masked
 
-        set_description(progress, "epoch $epoch [train] | loss: $(round(mean(epoch_train_losses), digits=4))")
+        if !isempty(y_masked)
+            preds_masked = Flux.onecold(logits_masked) |> cpu
+            tp = sum(preds_masked .== cpu(y_masked))
+            total_masked = length(y_masked)
+            total_train_tp += tp
+            total_train_masked += total_masked
+        end
     end
 
     # log metrics
@@ -322,21 +317,28 @@ while true
     push!(train_losses, epoch_train_loss)
     push!(train_accuracies, epoch_train_acc)
 
+
+    ### start test
     epoch_test_losses = Float32[]
     total_test_tp = 0
     total_test_masked = 0
 
-    progress_test = ProgressBar(1:batch_size:size(X_test_masked, 2))
-    for start_idx in progress_test
+    for start_idx in 1:batch_size:size(X_test_masked, 2)
         end_idx = min(start_idx + batch_size - 1, size(X_test_masked, 2))
         x_batch = gpu(X_test_masked[:, start_idx:end_idx])
         y_batch = gpu(y_test_masked[:, start_idx:end_idx])
 
-        test_loss_val, tp, total_masked = masked_loss_and_metrics(model, x_batch, y_batch)
+        test_loss_val, logits_masked, y_masked = loss(model, x_batch, y_batch, "test")
 
         push!(epoch_test_losses, test_loss_val)
-        total_test_tp += tp
-        total_test_masked += total_masked
+
+        if !isempty(y_masked)
+            preds_masked = Flux.onecold(logits_masked) |> cpu
+            tp = sum(preds_masked .== cpu(y_masked))
+            total_masked = length(y_masked)
+            total_test_tp += tp
+            total_test_masked += total_masked
+        end
     end
 
     # log metrics
@@ -345,14 +347,14 @@ while true
     push!(test_losses, epoch_test_loss)
     push!(test_accuracies, epoch_test_acc)
 
-    if epoch % 10 == 0
+    if epoch % 2 == 0
         run_time = now() - start_time
         total_minutes = div(run_time.value, 60000)
         run_hours = div(total_minutes, 60)
         run_minutes = rem(total_minutes, 60)
 
         timestamp = Dates.format(now(), "yyyy-mm-dd_HH-MM-SS")
-        save_dir = joinpath("plots", "untrt", "indef_masked_rankings", "$(timestamp)_epoch_$(epoch)")
+        save_dir = joinpath("plots", "untrt", "indef_masked_new", "$(timestamp)_epoch_$(epoch)")
         mkpath(save_dir)
 
         epochs_ran = 1:epoch
@@ -397,7 +399,7 @@ while true
             println(io, "learning_rate = $lr")
             println(io, "dropout_probability = $drop_prob")
             println(io, "--------------------")
-            println(io, "ADDITIONAL NOTES: good params (higher layers, embed dim) for first indefinite run!")
+            println(io, "ADDITIONAL NOTES: rerun for seb with changed code (from slide), logging every 2ep")
             println(io, "elapsed time @ save: $(run_hours) hours and $(run_minutes) minutes")
         end
     end
