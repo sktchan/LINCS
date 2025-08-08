@@ -1,0 +1,17 @@
+PARAMETERS:
+########### this was on smaug
+dataset = untrt
+masking_ratio = 0.1
+mask_value = -1.0
+NO DYNAMIC MASKING
+batch_size = 64
+n_epochs = 10
+embed_dim = 64
+hidden_dim = 128
+n_heads = 1
+n_layers = 4
+learning_rate = 0.001
+dropout_probability = 0.05
+ADDITIONAL NOTES: rerunning xbin plot iwthout y=x and for 10ep
+run_time = 3 hours and 47 minutes
+correlation = 0.9243354
