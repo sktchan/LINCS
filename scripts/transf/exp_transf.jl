@@ -8,8 +8,8 @@ CUDA.device!(0)
 
 start_time = now()
 
-data = load("data/lincs_untrt_data.jld2")["filtered_data"] # untrt only
-# data = load("data/lincs_trt_untrt_data.jld2")["filtered_data"] # trt and untrt data
+# data = load("data/lincs_untrt_data.jld2")["filtered_data"] # untrt only
+data = load("data/lincs_trt_untrt_data.jld2")["filtered_data"] # trt and untrt data
 
 @time X = data.expr #!# use raw expression values!!!
 
@@ -223,11 +223,11 @@ X_test_masked, y_test_masked = mask_input(X_test)
 
 # n_genes, n_samples = size(X) # n_genes already defined
 n_samples = size(X, 2)
-batch_size = 128
-n_epochs = 30
-embed_dim = 128
-hidden_dim = 256
-n_heads = 2
+batch_size = 64
+n_epochs = 10
+embed_dim = 64
+hidden_dim = 128
+n_heads = 1
 n_layers = 4
 drop_prob = 0.05
 lr = 0.001
@@ -344,36 +344,68 @@ for start_idx in 1:batch_size:size(X_test_masked, 2)
     append!(all_trues, cpu(y_masked))
 end
 
-Plots.scatter(all_trues, all_preds,
-        label="predictions",
-        xlabel="true exp values",
-        ylabel="predicted exp values",
-        title="pred vs true exp values",
-        alpha=0.3,
-        aspect_ratio=:equal,
-        markersize=2,
-        xlims=(0, 16))
+# Plots.scatter(all_trues, all_preds,
+#         label="predictions",
+#         xlabel="true exp values",
+#         ylabel="predicted exp values",
+#         title="pred vs true exp values",
+#         alpha=0.3,
+#         aspect_ratio=:equal,
+#         markersize=2,
+#         xlims=(0, 16))
 
-min_val = min(minimum(all_trues), minimum(all_preds))
-max_val = max(maximum(all_trues), maximum(all_preds))
+# min_val = min(minimum(all_trues), minimum(all_preds))
+# max_val = max(maximum(all_trues), maximum(all_preds))
 
-Plots.plot!([min_val, max_val], [min_val, max_val],
-      label="y=x",
-      linestyle=:dash,
-      lw=2)
+# Plots.plot!([min_val, max_val], [min_val, max_val],
+#       label="y=x",
+#       linestyle=:dash,
+#       lw=2)
 
+# correlation = cor(all_trues, all_preds)
+# savefig(joinpath(save_dir, "prediction_scatter_plot.png"))
+
+min_val = minimum(all_trues)
+max_val = maximum(all_trues)
 correlation = cor(all_trues, all_preds)
-savefig(joinpath(save_dir, "prediction_scatter_plot.png"))
+
+bin_edges = min_val:1:max_val
+bin_midpts = (bin_edges[1:end-1] .+ bin_edges[2:end]) ./ 2
+
+mean_preds = Float64[]
+std_preds = Float64[]
+
+for i in 1:length(bin_edges)-1
+    indices = findall(x -> bin_edges[i] <= x < bin_edges[i+1], all_trues) # if x is >= left edge and <= right edge, return vector of indices where True
+    preds_in_bin = all_preds[indices]
+    push!(mean_preds, mean(preds_in_bin))
+    push!(std_preds, std(preds_in_bin))
+end
+
+Plots.scatter(bin_midpts, mean_preds,
+    yerror=std_preds,
+    xlabel="true expression value",
+    ylabel="predicted expression value",
+    title="binned predicted vs. true exp",
+    markersize=5,
+    legend=:topleft)
+
+savefig(joinpath(save_dir, "binned_prediction_scatter.png"))
 
 # log data
-df = DataFrame(df = DataFrame(
+df_losses = DataFrame(
     epoch = 1:n_epochs,
     train_loss = train_losses,
-    test_loss = test_losses,
+    test_loss = test_losses
+)
+CSV.write(joinpath(save_dir, "losses.csv"), df_losses)
+
+# log pred/true
+df_preds = DataFrame(
     all_preds = all_preds,
     all_trues = all_trues
-))
-CSV.write(joinpath(save_dir, "results.csv"), df)
+)
+CSV.write(joinpath(save_dir, "predstrues.csv"), df_preds)
 
 end_time = now()
 run_time = end_time - start_time
@@ -385,8 +417,8 @@ run_minutes = rem(total_minutes, 60)
 params_txt = joinpath(save_dir, "params.txt")
 open(params_txt, "w") do io
     println(io, "PARAMETERS:")
-    println(io, "########### this was on smaug")
-    println(io, "dataset = untrt")
+    println(io, "########### this was on kraken")
+    println(io, "dataset = trt")
     println(io, "masking_ratio = $mask_ratio")
     println(io, "mask_value = $MASK_VALUE")
     println(io, "NO DYNAMIC MASKING")
@@ -398,7 +430,7 @@ open(params_txt, "w") do io
     println(io, "n_layers = $n_layers")
     println(io, "learning_rate = $lr")
     println(io, "dropout_probability = $drop_prob")
-    println(io, "ADDITIONAL NOTES: running with diff loss update and sam params as rank transf")
+    println(io, "ADDITIONAL NOTES: testing exp transf on trt dataset")
     println(io, "run_time = $(run_hours) hours and $(run_minutes) minutes")
     println(io, "correlation = $correlation")
 end

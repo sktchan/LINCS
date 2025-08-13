@@ -8,7 +8,7 @@ Pkg.activate("/home/golem/scratch/chans/lincs")
 # using Infiltrator
 using LincsProject, DataFrames, CSV, Dates, JSON, StatsBase, JLD2, SparseArrays, Dates, Printf, Profile
 using Flux, Random, OneHotArrays, CategoricalArrays, ProgressBars, CUDA, Statistics, Plots, CairoMakie, LinearAlgebra
-CUDA.device!(0)
+CUDA.device!(3)
 
 start_time = now()
 
@@ -273,8 +273,8 @@ X_test_masked, y_test_masked = mask_input(X_test)
 ### training
 
 n_genes, n_samples = size(X)
-batch_size = 64
-n_epochs = 3
+batch_size = 128
+n_epochs = 10
 embed_dim = 64
 hidden_dim = 128
 n_heads = 1
@@ -467,16 +467,15 @@ end
 
 log_freq_matrix = log1p.(freq_matrix)
 
-fig = Figure(resolution = (1200, 1000))
+fig = Figure(size = (800, 800))
 ax = Axis(fig[1, 1],
           title = "predicted vs. true",
           xlabel = "true gene id",
           ylabel = "predicted gene id",
           aspect = AxisAspect(1))
 
-h = heatmap!(ax, 1:n_classes, 1:n_classes, log_freq_matrix, colormap = :viridis)
-Colorbar(fig[1, 2], h) # log(1+count)
-lines!(ax, [1, n_classes], [1, n_classes], color = :red, linestyle = :dash, linewidth = 2)
+h = CairoMakie.heatmap!(ax, 1:n_classes, 1:n_classes, log_freq_matrix, colormap = :viridis)
+CairoMakie.Colorbar(fig[1, 2], h) # log(1+count)
 
 save(joinpath(save_dir, "prediction_heatmap.png"), fig)
 
@@ -511,7 +510,7 @@ open(params_txt, "w") do io
     println(io, "n_layers = $n_layers")
     println(io, "learning_rate = $lr")
     println(io, "dropout_probability = $drop_prob")
-    println(io, "ADDITIONAL NOTES: testing heatmap, 3ep")
-    println(io, "run_time = $(run_hours) hours and $(run_minutes) minutes"),
-    println(io, "correlation = $correlation")
+    println(io, "ADDITIONAL NOTES: rerunning heatmap without y=x line and 10ep")
+    println(io, "run_time = $(run_hours) hours and $(run_minutes) minutes")
+    # println(io, "correlation = $correlation")
 end
