@@ -224,7 +224,7 @@ X_test_masked, y_test_masked = mask_input(X_test)
 # n_genes, n_samples = size(X) # n_genes already defined
 n_samples = size(X, 2)
 batch_size = 64
-n_epochs = 10
+n_epochs = 100
 embed_dim = 64
 hidden_dim = 128
 n_heads = 1
@@ -401,6 +401,33 @@ Colorbar(fig_hex[1, 2], hexplot, label="point count")
 # ablines!(ax_hex, 0, 1, color=:red, linestyle=:dash, linewidth=2)
 save(joinpath(save_dir, "hexbin.png"), fig_hex)
 
+#######################################################################################################################################
+
+### checking if predicting average
+gene_averages_train = vec(mean(X_train, dims=2)) |> cpu
+masked_indices = findall(!isnan, y_test_masked)
+gene_indices_for_masked_values = getindex.(masked_indices, 1)
+baseline_preds = gene_averages_train[gene_indices_for_masked_values]
+mse_model = mean((all_trues .- all_preds).^2)
+mse_baseline = mean((all_trues .- baseline_preds).^2)
+
+# lims = (floor(min_val), ceil(max_val))
+
+fig_baseline_hex = Figure(size = (800, 600))
+ax_baseline_hex = Axis(fig_baseline_hex[1, 1],
+    xlabel="true expression val",
+    ylabel="gene average val",
+    title="predicting the average vs. true expression density",
+    aspect=DataAspect()
+    # limits=(lims, lims)
+)
+
+hexplot_baseline = hexbin!(ax_baseline_hex, all_trues, baseline_preds)
+Colorbar(fig_baseline_hex[1, 2], hexplot_baseline, label="point count")
+save(joinpath(save_dir, "avg_hexbin.png"), fig_baseline_hex)
+
+#######################################################################################################################################
+
 # log data
 df_losses = DataFrame(
     epoch = 1:n_epochs,
@@ -439,7 +466,9 @@ open(params_txt, "w") do io
     println(io, "n_layers = $n_layers")
     println(io, "learning_rate = $lr")
     println(io, "dropout_probability = $drop_prob")
-    println(io, "ADDITIONAL NOTES: trying out boxplot and hexbins and cairomakie for everything")
+    println(io, "ADDITIONAL NOTES: plotting avg as well. longer run")
     println(io, "run_time = $(run_hours) hours and $(run_minutes) minutes")
-    println(io, "correlation = $correlation")
+    println(io, "correlation = $correlation"),
+    println(io, "mse model = $mse_model"),
+    println(io, "mse baseline = $mse_baseline")
 end

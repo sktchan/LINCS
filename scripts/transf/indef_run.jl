@@ -298,7 +298,7 @@ while true
             loss(m, x_batch, y_batch, "train")
         end
         Flux.update!(opt, model, grads[1])
-        loss_val = loss(model, x_batch, y_batch, "train")
+        loss_val, logits_masked, y_masked = loss(model, x_batch, y_batch, "test")
         
         push!(epoch_train_losses, loss_val)
 
@@ -313,11 +313,16 @@ while true
 
     # log metrics
     epoch_train_loss = mean(epoch_train_losses)
-    epoch_train_acc = total_train_masked > 0 ? total_train_tp / total_train_masked : 0.0
+
+    epoch_train_acc = 0.0
+    if total_train_masked > 0
+        epoch_train_acc = total_train_tp / total_train_masked
+    end
+
     push!(train_losses, epoch_train_loss)
     push!(train_accuracies, epoch_train_acc)
 
-
+    
     ### start test
     epoch_test_losses = Float32[]
     total_test_tp = 0
@@ -343,7 +348,12 @@ while true
 
     # log metrics
     epoch_test_loss = mean(epoch_test_losses)
-    epoch_test_acc = total_test_masked > 0 ? total_test_tp / total_test_masked : 0.0
+
+    epoch_test_acc = 0.0
+    if total_test_masked > 0
+        epoch_test_acc = total_test_tp / total_test_masked
+    end
+
     push!(test_losses, epoch_test_loss)
     push!(test_accuracies, epoch_test_acc)
 

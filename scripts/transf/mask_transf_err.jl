@@ -7,7 +7,7 @@ Pkg.activate("/home/golem/scratch/chans/lincs")
 
 # using Infiltrator
 using LincsProject, DataFrames, CSV, Dates, JSON, StatsBase, JLD2, SparseArrays, Dates, Printf, Profile
-using Flux, Random, OneHotArrays, CategoricalArrays, ProgressBars, CUDA, Statistics, Plots, CairoMakie, LinearAlgebra
+using Flux, Random, OneHotArrays, CategoricalArrays, ProgressBars, CUDA, Statistics, CairoMakie, LinearAlgebra
 CUDA.device!(0)
 
 start_time = now()
@@ -449,8 +449,13 @@ save(joinpath(save_dir, "error.png"), fig_err)
 
 # boxplots
 bin_size = 50
-bin_edges = 1:bin_size:n_classes
-if bin_edges[end] < n_classes; push!(bin_edges, n_classes+1); end
+bin_edges = collect(1:bin_size:n_classes)
+
+# Now push! will work because bin_edges is a mutable Vector
+if bin_edges[end] < n_classes
+    push!(bin_edges, n_classes + 1)
+end
+
 bin_midpts = (bin_edges[1:end-1] .+ bin_edges[2:end]) ./ 2
 
 grouped_preds = Int[]
@@ -474,7 +479,7 @@ ax_box = Axis(fig_box[1, 1],
     title="predicted vs true gene ids"
 )
 boxplot!(ax_box, grouped_trues_midpts, grouped_preds, width=bin_size*0.5)
-ablines!(ax_box, 0, 1, color=:black, linestyle=:dash, linewidth=2)
+# ablines!(ax_box, 0, 1, color=:black, linestyle=:dash, linewidth=2)
 save(joinpath(save_dir, "boxplot.png"), fig_box)
 
 
@@ -487,8 +492,8 @@ ax_hex = Axis(fig_hex[1, 1],
     aspect=DataAspect()
 )
 hexplot = hexbin!(ax_hex, all_trues, all_preds)
-Colorbar(fig_hex[1, 2], hexplot, label="Point Count")
-ablines!(ax_hex, 0, 1, color=:red, linestyle=:dash, linewidth=2)
+Colorbar(fig_hex[1, 2], hexplot, label="point count")
+# ablines!(ax_hex, 0, 1, color=:red, linestyle=:dash, linewidth=2)
 save(joinpath(save_dir, "hexbin.png"), fig_hex)
 
 # log data
@@ -522,7 +527,7 @@ open(params_txt, "w") do io
     println(io, "n_layers = $n_layers")
     println(io, "learning_rate = $lr")
     println(io, "dropout_probability = $drop_prob")
-    println(io, "ADDITIONAL NOTES: trying out boxplot and hexbins and cairomakie for everything to comapre to exp plots")
+    println(io, "ADDITIONAL NOTES: trying out boxplot and hexbins and cairomakie for everything to comapre to exp plots, fixed plotting but still 10ep")
     println(io, "run_time = $(run_hours) hours and $(run_minutes) minutes")
     # println(io, "correlation = $correlation")
 end
