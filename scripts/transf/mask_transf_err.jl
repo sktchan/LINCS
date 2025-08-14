@@ -8,7 +8,7 @@ Pkg.activate("/home/golem/scratch/chans/lincs")
 # using Infiltrator
 using LincsProject, DataFrames, CSV, Dates, JSON, StatsBase, JLD2, SparseArrays, Dates, Printf, Profile
 using Flux, Random, OneHotArrays, CategoricalArrays, ProgressBars, CUDA, Statistics, Plots, CairoMakie, LinearAlgebra
-CUDA.device!(3)
+CUDA.device!(0)
 
 start_time = now()
 
@@ -401,83 +401,95 @@ timestamp = Dates.format(now(), "yyyy-mm-dd_HH-MM")
 save_dir = joinpath("plots", "untrt", "masked_rankings", timestamp)
 mkpath(save_dir)
 
-# loss plot
-Plots.plot(1:n_epochs, train_losses; label="training loss",
-     xlabel="epoch", ylabel="loss", title="training vs validation loss", lw=2)
-Plots.plot!(1:n_epochs, test_losses;  label="test loss", lw=2)
-savefig(joinpath(save_dir, "trainval_loss.png"))
+# loss p;lot
+fig_loss = Figure(size = (800, 600))
+ax_loss = Axis(fig_loss[1, 1], 
+    xlabel="epoch", 
+    ylabel="loss (logit-ce)", 
+    title="train vs. test loss"
+)
+lines!(ax_loss, 1:n_epochs, train_losses, label="train loss", linewidth=2)
+lines!(ax_loss, 1:n_epochs, test_losses, label="test loss", linewidth=2)
+axislegend(ax_loss, position=:rt)
+save(joinpath(save_dir, "loss.png"), fig_loss)
 
-# error
-acc_plot = Plots.plot(1:n_epochs, test_rank_errors; label="test",
-    xlabel="epoch", ylabel="mean error", title="mean rank errors", lw=2)
-savefig(joinpath(save_dir, "error.png"))
 
-#!# scatter plot instead of accuracy to visualize :D
+# rank error plot
+fig_err = Figure(size = (800, 600))
+ax_err = Axis(fig_err[1, 1],
+    xlabel="epoch", 
+    ylabel="error", 
+    title="mean rank errors"
+)
+lines!(ax_err, 1:n_epochs, test_rank_errors, label="test error", linewidth=2)
+save(joinpath(save_dir, "error.png"), fig_err)
 
-# all_preds = Int[]
-# all_trues = Int[]
 
-# for start_idx in 1:batch_size:size(X_test_masked, 2)
-#     end_idx = min(start_idx + batch_size - 1, size(X_test_masked, 2))
-#     x_gpu = gpu(X_test_masked[:, start_idx:end_idx])
-#     y_gpu = gpu(y_test_masked[:, start_idx:end_idx])
-#     _, logits_masked, y_masked = loss(model, x_gpu, y_gpu, "test")
-
-#     if isempty(y_masked) 
-#         continue 
+# heamap 
+# freq_matrix = zeros(Int, n_classes, n_classes)
+# for i in 1:length(all_trues)
+#     true_id = all_trues[i]
+#     pred_id = all_preds[i]
+#     if 1 <= true_id <= n_classes && 1 <= pred_id <= n_classes
+#         freq_matrix[pred_id, true_id] += 1 # Swapped to be (y, x)
 #     end
-
-#     predicted_ranks = Flux.onecold(logits_masked)
-
-#     append!(all_preds, cpu(predicted_ranks))
-#     append!(all_trues, cpu(y_masked))
 # end
+# log_freq_matrix = log1p.(freq_matrix)
 
-# Plots.scatter(all_trues, all_preds,
-#         label="predictions",
-#         xlabel="true rank",
-#         ylabel="predicted rank",
-#         title="pred vs. true ranks",
-#         alpha=0.3,
-#         aspect_ratio=:equal,
-#         markersize=2,
-#         xlims=(0, 1000))
+# fig_heatmap = Figure(size = (800, 700))
+# ax_heatmap = Axis(fig_heatmap[1, 1],
+#           title = "Prediction Frequency Heatmap",
+#           xlabel = "True Gene ID",
+#           ylabel = "Predicted Gene ID",
+#           aspect = DataAspect(1))
+# h = heatmap!(ax_heatmap, 1:n_classes, 1:n_classes, log_freq_matrix, colormap = :viridis)
+# Colorbar(fig_heatmap[1, 2], h, label="log(1 + Count)")
+# save(joinpath(save_dir, "prediction_heatmap.png"), fig_heatmap)
 
-# min_val = 1
-# max_val = n_classes
 
-# Plots.plot!([min_val, max_val], [min_val, max_val],
-#       label="y=x",
-#       linestyle=:dash,
-#       lw=2)
+# boxplots
+bin_size = 50
+bin_edges = 1:bin_size:n_classes
+if bin_edges[end] < n_classes; push!(bin_edges, n_classes+1); end
+bin_midpts = (bin_edges[1:end-1] .+ bin_edges[2:end]) ./ 2
 
-# correlation = cor(all_trues, all_preds)
-# savefig(joinpath(save_dir, "prediction_scatter_plot.png"))
+grouped_preds = Int[]
+grouped_trues_midpts = Float64[]
 
-#!# heatmap instead of scatter plot to visualize!
-
-freq_matrix = zeros(Int, n_classes, n_classes)
-for i in 1:length(all_trues)
-    true_id = all_trues[i]
-    pred_id = all_preds[i]
-    if 1 <= true_id <= n_classes && 1 <= pred_id <= n_classes
-        freq_matrix[true_id, pred_id] += 1
+for i in 1:length(bin_edges)-1
+    # Find all true values that fall into the current bin of gene IDs
+    indices = findall(x -> bin_edges[i] <= x < bin_edges[i+1], all_trues)
+    if !isempty(indices)
+        preds_in_bin = all_preds[indices]
+        midpoint = bin_midpts[i]
+        append!(grouped_preds, preds_in_bin)
+        append!(grouped_trues_midpts, fill(midpoint, length(preds_in_bin)))
     end
 end
 
-log_freq_matrix = log1p.(freq_matrix)
+fig_box = Figure(size = (800, 600))
+ax_box = Axis(fig_box[1, 1],
+    xlabel="true gene id",
+    ylabel="predicted gene id",
+    title="predicted vs true gene ids"
+)
+boxplot!(ax_box, grouped_trues_midpts, grouped_preds, width=bin_size*0.5)
+ablines!(ax_box, 0, 1, color=:black, linestyle=:dash, linewidth=2)
+save(joinpath(save_dir, "boxplot.png"), fig_box)
 
-fig = Figure(size = (800, 800))
-ax = Axis(fig[1, 1],
-          title = "predicted vs. true",
-          xlabel = "true gene id",
-          ylabel = "predicted gene id",
-          aspect = AxisAspect(1))
 
-h = CairoMakie.heatmap!(ax, 1:n_classes, 1:n_classes, log_freq_matrix, colormap = :viridis)
-CairoMakie.Colorbar(fig[1, 2], h) # log(1+count)
-
-save(joinpath(save_dir, "prediction_heatmap.png"), fig)
+# hexbin
+fig_hex = Figure(size = (800, 700))
+ax_hex = Axis(fig_hex[1, 1],
+    xlabel="true gene id",
+    ylabel="predicted gene id",
+    title="predicted vs true gene id density",
+    aspect=DataAspect()
+)
+hexplot = hexbin!(ax_hex, all_trues, all_preds)
+Colorbar(fig_hex[1, 2], hexplot, label="Point Count")
+ablines!(ax_hex, 0, 1, color=:red, linestyle=:dash, linewidth=2)
+save(joinpath(save_dir, "hexbin.png"), fig_hex)
 
 # log data
 df_losses = DataFrame(
@@ -510,7 +522,7 @@ open(params_txt, "w") do io
     println(io, "n_layers = $n_layers")
     println(io, "learning_rate = $lr")
     println(io, "dropout_probability = $drop_prob")
-    println(io, "ADDITIONAL NOTES: rerunning heatmap without y=x line and 10ep")
+    println(io, "ADDITIONAL NOTES: trying out boxplot and hexbins and cairomakie for everything to comapre to exp plots")
     println(io, "run_time = $(run_hours) hours and $(run_minutes) minutes")
     # println(io, "correlation = $correlation")
 end

@@ -3,13 +3,13 @@ Pkg.activate("/home/golem/scratch/chans/lincs")
 
 # using Infiltrator
 using LincsProject, DataFrames, CSV, Dates, JSON, StatsBase, JLD2, SparseArrays, Dates, Printf, Profile
-using Flux, Random, OneHotArrays, CategoricalArrays, ProgressBars, CUDA, Statistics, Plots, CairoMakie, LinearAlgebra
+using Flux, Random, OneHotArrays, CategoricalArrays, ProgressBars, CUDA, Statistics, CairoMakie, LinearAlgebra
 CUDA.device!(0)
 
 start_time = now()
 
-# data = load("data/lincs_untrt_data.jld2")["filtered_data"] # untrt only
-data = load("data/lincs_trt_untrt_data.jld2")["filtered_data"] # trt and untrt data
+data = load("data/lincs_untrt_data.jld2")["filtered_data"] # untrt only
+# data = load("data/lincs_trt_untrt_data.jld2")["filtered_data"] # trt and untrt data ### REMEMBER TO NOT SAVE PREDSTRUES.CSV IF RUNNING THIS ONE
 
 @time X = data.expr #!# use raw expression values!!!
 
@@ -323,13 +323,19 @@ save_dir = joinpath("plots", "untrt", "masked_expression", timestamp)
 mkpath(save_dir)
 
 # loss plot
-Plots.plot(1:n_epochs, train_losses; label="training loss",
-     xlabel="epoch", ylabel="loss (MSE)", title="training vs validation loss", lw=2)
-Plots.plot!(1:n_epochs, test_losses;  label="test loss", lw=2)
-savefig(joinpath(save_dir, "trainval_loss.png"))
+fig_loss = Figure(size = (800, 600))
+ax_loss = Axis(fig_loss[1, 1], 
+    xlabel="epoch", 
+    ylabel="loss (mse)", 
+    title="train vs. test loss"
+)
+lines!(ax_loss, 1:n_epochs, train_losses, label="train loss", linewidth=2)
+lines!(ax_loss, 1:n_epochs, test_losses, label="test loss", linewidth=2)
+axislegend(ax_loss, position=:rt)
 
-#!# scatter plot instead of accuracy to visualize :D
+save(joinpath(save_dir, "loss.png"), fig_loss)
 
+#!# collect all predictions and true values from the test set
 all_preds = Float32[]
 all_trues = Float32[]
 test_epoch_losses = Float32[]
@@ -344,53 +350,56 @@ for start_idx in 1:batch_size:size(X_test_masked, 2)
     append!(all_trues, cpu(y_masked))
 end
 
-# Plots.scatter(all_trues, all_preds,
-#         label="predictions",
-#         xlabel="true exp values",
-#         ylabel="predicted exp values",
-#         title="pred vs true exp values",
-#         alpha=0.3,
-#         aspect_ratio=:equal,
-#         markersize=2,
-#         xlims=(0, 16))
-
-# min_val = min(minimum(all_trues), minimum(all_preds))
-# max_val = max(maximum(all_trues), maximum(all_preds))
-
-# Plots.plot!([min_val, max_val], [min_val, max_val],
-#       label="y=x",
-#       linestyle=:dash,
-#       lw=2)
-
-# correlation = cor(all_trues, all_preds)
-# savefig(joinpath(save_dir, "prediction_scatter_plot.png"))
+correlation = cor(all_trues, all_preds)
 
 min_val = minimum(all_trues)
 max_val = maximum(all_trues)
-correlation = cor(all_trues, all_preds)
 
-bin_edges = min_val:1:max_val
+# define bins
+bin_edges = min_val:1.0:max_val
 bin_midpts = (bin_edges[1:end-1] .+ bin_edges[2:end]) ./ 2
 
-mean_preds = Float64[]
-std_preds = Float64[]
+# prep boxplot data
+grouped_preds = Float32[]
+grouped_trues_midpts = Float64[]
 
 for i in 1:length(bin_edges)-1
-    indices = findall(x -> bin_edges[i] <= x < bin_edges[i+1], all_trues) # if x is >= left edge and <= right edge, return vector of indices where True
-    preds_in_bin = all_preds[indices]
-    push!(mean_preds, mean(preds_in_bin))
-    push!(std_preds, std(preds_in_bin))
+    indices = findall(x -> bin_edges[i] <= x < bin_edges[i+1], all_trues)
+    if !isempty(indices)
+        preds_in_bin = all_preds[indices]
+        midpoint = bin_midpts[i]
+        append!(grouped_preds, preds_in_bin)
+        append!(grouped_trues_midpts, fill(midpoint, length(preds_in_bin)))
+    end
 end
 
-Plots.scatter(bin_midpts, mean_preds,
-    yerror=std_preds,
-    xlabel="true expression value",
-    ylabel="predicted expression value",
-    title="binned predicted vs. true exp",
-    markersize=5,
-    legend=:topleft)
+# create the boxplot figure and axis
+fig_box = Figure(size = (800, 600))
+ax_box = Axis(fig_box[1, 1],
+    xlabel="true expression val",
+    ylabel="predicted expression val",
+    title="predicted vs. true expression"
+)
 
-savefig(joinpath(save_dir, "binned_prediction_scatter.png"))
+# plot the boxplot data
+boxplot!(ax_box, grouped_trues_midpts, grouped_preds, width=0.5, whiskerwidth=0.5)
+# ablines!(ax_box, 0, 1, color=:black, linestyle=:dash, linewidth=1)
+save(joinpath(save_dir, "boxplot.png"), fig_box)
+
+
+# plot hexbin
+fig_hex = Figure(size = (800, 600))
+ax_hex = Axis(fig_hex[1, 1],
+    xlabel="true expression val",
+    ylabel="predicted expression val",
+    title="predicted vs. true expression density",
+    aspect=DataAspect() 
+)
+
+hexplot = hexbin!(ax_hex, all_trues, all_preds)
+Colorbar(fig_hex[1, 2], hexplot, label="point count")
+# ablines!(ax_hex, 0, 1, color=:red, linestyle=:dash, linewidth=2)
+save(joinpath(save_dir, "hexbin.png"), fig_hex)
 
 # log data
 df_losses = DataFrame(
@@ -418,7 +427,7 @@ params_txt = joinpath(save_dir, "params.txt")
 open(params_txt, "w") do io
     println(io, "PARAMETERS:")
     println(io, "########### this was on kraken")
-    println(io, "dataset = trt")
+    println(io, "dataset = untrt")
     println(io, "masking_ratio = $mask_ratio")
     println(io, "mask_value = $MASK_VALUE")
     println(io, "NO DYNAMIC MASKING")
@@ -430,7 +439,7 @@ open(params_txt, "w") do io
     println(io, "n_layers = $n_layers")
     println(io, "learning_rate = $lr")
     println(io, "dropout_probability = $drop_prob")
-    println(io, "ADDITIONAL NOTES: testing exp transf on trt dataset")
+    println(io, "ADDITIONAL NOTES: trying out boxplot and hexbins and cairomakie for everything")
     println(io, "run_time = $(run_hours) hours and $(run_minutes) minutes")
     println(io, "correlation = $correlation")
 end
