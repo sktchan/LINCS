@@ -274,10 +274,10 @@ X_test_masked, y_test_masked = mask_input(X_test)
 
 n_genes, n_samples = size(X)
 batch_size = 128
-n_epochs = 10
-embed_dim = 64
-hidden_dim = 128
-n_heads = 1
+n_epochs = 300
+embed_dim = 128
+hidden_dim = 256
+n_heads = 2
 n_layers = 4
 drop_prob = 0.05
 lr = 0.001

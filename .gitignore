@@ -4,7 +4,7 @@ practice/
 frogs_src/
 output_logs/
 nohup.out
-echo "**/predstrues.csv" >> .gitignore
+**/predstrues.csv
 
 # ignore files where i test misc. stuff out
 practice/

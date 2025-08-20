@@ -1,0 +1,19 @@
+PARAMETERS:
+########### this was on kraken
+dataset = untrt
+masking_ratio = 0.1
+mask_value = -1.0
+NO DYNAMIC MASKING
+batch_size = 128
+n_epochs = 300
+embed_dim = 128
+hidden_dim = 256
+n_heads = 2
+n_layers = 4
+learning_rate = 0.001
+dropout_probability = 0.05
+ADDITIONAL NOTES: longer run with fixed metrics
+run_time = 68 hours and 50 minutes
+correlation = 0.95992404
+mse model = 0.40622
+mse baseline = 1.8329144

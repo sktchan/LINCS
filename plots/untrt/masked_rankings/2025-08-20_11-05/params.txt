@@ -1,0 +1,15 @@
+PARAMETERS:
+########### this was on smaug
+dataset = untrt
+masking_ratio = 0.1
+NO DYNAMIC MASKING
+batch_size = 128
+n_epochs = 300
+embed_dim = 128
+hidden_dim = 256
+n_heads = 2
+n_layers = 4
+learning_rate = 0.001
+dropout_probability = 0.05
+ADDITIONAL NOTES: trying out boxplot and hexbins and cairomakie for everything to comapre to exp plots, fixed plotting but still 10ep
+run_time = 111 hours and 48 minutes

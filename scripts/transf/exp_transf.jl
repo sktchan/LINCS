@@ -4,7 +4,7 @@ Pkg.activate("/home/golem/scratch/chans/lincs")
 # using Infiltrator
 using LincsProject, DataFrames, CSV, Dates, JSON, StatsBase, JLD2, SparseArrays, Dates, Printf, Profile
 using Flux, Random, OneHotArrays, CategoricalArrays, ProgressBars, CUDA, Statistics, CairoMakie, LinearAlgebra
-CUDA.device!(0)
+CUDA.device!(1)
 
 start_time = now()
 
@@ -140,7 +140,8 @@ function Model(;
     classifier = Flux.Chain(
         Flux.Dense(embed_dim => embed_dim, gelu),
         Flux.LayerNorm(embed_dim),
-        Flux.Dense(embed_dim => 1) #!# 1 value returned
+        Flux.Dense(embed_dim => 1, softplus) #!# 1 value returned
+
         )
 
     return Model(projection, pos_encoder, pos_dropout, transformer, classifier)
@@ -223,11 +224,11 @@ X_test_masked, y_test_masked = mask_input(X_test)
 
 # n_genes, n_samples = size(X) # n_genes already defined
 n_samples = size(X, 2)
-batch_size = 64
-n_epochs = 100
-embed_dim = 64
-hidden_dim = 128
-n_heads = 1
+batch_size = 128
+n_epochs = 300
+embed_dim = 128
+hidden_dim = 256
+n_heads = 2
 n_layers = 4
 drop_prob = 0.05
 lr = 0.001
@@ -269,7 +270,7 @@ function loss(model::Model, x, y, mode::String)
         return regression_loss, preds_masked, y_masked
     end
 end
-
+println("starting traintest loop")
 train_losses = Float32[]
 test_losses = Float32[]
 #!# accuracy doesn't work for regression, removed it
@@ -314,7 +315,7 @@ for epoch in ProgressBar(1:n_epochs)
 end
 # end
 
-
+println("starting eval metrics")
 ### evaluation metrics
 
 # mk dir
@@ -374,6 +375,7 @@ for i in 1:length(bin_edges)-1
 end
 
 # create the boxplot figure and axis
+begin
 fig_box = Figure(size = (800, 600))
 ax_box = Axis(fig_box[1, 1],
     xlabel="true expression val",
@@ -382,8 +384,10 @@ ax_box = Axis(fig_box[1, 1],
 )
 
 # plot the boxplot data
-boxplot!(ax_box, grouped_trues_midpts, grouped_preds, width=0.5, whiskerwidth=0.5)
+boxplot!(ax_box, grouped_trues_midpts, grouped_preds, range=0, whiskerlinewidth=0)
 # ablines!(ax_box, 0, 1, color=:black, linestyle=:dash, linewidth=1)
+fig_box
+end
 save(joinpath(save_dir, "boxplot.png"), fig_box)
 
 
@@ -466,7 +470,7 @@ open(params_txt, "w") do io
     println(io, "n_layers = $n_layers")
     println(io, "learning_rate = $lr")
     println(io, "dropout_probability = $drop_prob")
-    println(io, "ADDITIONAL NOTES: plotting avg as well. longer run")
+    println(io, "ADDITIONAL NOTES: longer run with fixed metrics")
     println(io, "run_time = $(run_hours) hours and $(run_minutes) minutes")
     println(io, "correlation = $correlation"),
     println(io, "mse model = $mse_model"),
