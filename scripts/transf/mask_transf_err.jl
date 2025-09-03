@@ -451,7 +451,7 @@ save(joinpath(save_dir, "error.png"), fig_err)
 bin_size = 50
 bin_edges = collect(1:bin_size:n_classes)
 
-# Now push! will work because bin_edges is a mutable Vector
+# now push! will work because bin_edges is a mutable Vector
 if bin_edges[end] < n_classes
     push!(bin_edges, n_classes + 1)
 end
@@ -462,7 +462,7 @@ grouped_preds = Int[]
 grouped_trues_midpts = Float64[]
 
 for i in 1:length(bin_edges)-1
-    # Find all true values that fall into the current bin of gene IDs
+    # find all true values that fall into the current bin of gene IDs
     indices = findall(x -> bin_edges[i] <= x < bin_edges[i+1], all_trues)
     if !isempty(indices)
         preds_in_bin = all_preds[indices]

@@ -141,7 +141,6 @@ function Model(;
         Flux.Dense(embed_dim => embed_dim, gelu),
         Flux.LayerNorm(embed_dim),
         Flux.Dense(embed_dim => 1, softplus) #!# 1 value returned
-
         )
 
     return Model(projection, pos_encoder, pos_dropout, transformer, classifier)
@@ -353,6 +352,119 @@ end
 
 correlation = cor(all_trues, all_preds)
 
+### old boxplot
+
+# min_val = minimum(all_trues)
+# max_val = maximum(all_trues)
+
+# # define bins
+# bin_edges = min_val:1.0:max_val
+# bin_midpts = (bin_edges[1:end-1] .+ bin_edges[2:end]) ./ 2
+
+# # prep boxplot data
+# grouped_preds = Float32[]
+# grouped_trues_midpts = Float64[]
+
+# for i in 1:length(bin_edges)-1
+#     indices = findall(x -> bin_edges[i] <= x < bin_edges[i+1], all_trues)
+#     if !isempty(indices)
+#         preds_in_bin = all_preds[indices]
+#         midpt = bin_midpts[i]
+#         append!(grouped_preds, preds_in_bin)
+#         append!(grouped_trues_midpts, fill(midpt, length(preds_in_bin)))
+#     end
+# end
+
+# # create the boxplot figure and axis
+# begin
+# fig_box = Figure(size = (800, 600))
+# ax_box = Axis(fig_box[1, 1],
+#     xlabel="true expression val",
+#     ylabel="predicted expression val",
+#     title="predicted vs. true expression"
+# )
+
+# # plot the boxplot data
+# boxplot!(ax_box, grouped_trues_midpts, grouped_preds, range=0, whiskerlinewidth=0)
+# # ablines!(ax_box, 0, 1, color=:black, linestyle=:dash, linewidth=1)
+# fig_box
+# end
+# save(joinpath(save_dir, "boxplot.png"), fig_box)
+
+#######################################################################################################################################
+
+### just boxplot
+
+# min_val = minimum(all_trues)
+# max_val = maximum(all_trues)
+
+# # define bins
+# bin_edges = min_val:1.0:max_val
+# bin_midpts = (bin_edges[1:end-1] .+ bin_edges[2:end]) ./ 2
+
+# stats = Dict()
+# x_outliers = Float32[]
+# y_outliers = Float32[]
+
+
+# for (i, midpt) in enumerate(bin_midpts) # for each bin
+#     ind = findall(x -> bin_edges[i] <= x < bin_edges[i+1], all_trues)
+#     bin_preds = all_preds[ind]
+
+#     q10 = quantile(bin_preds, 0.10)
+#     q25 = quantile(bin_preds, 0.25)
+#     q50 = quantile(bin_preds, 0.50)
+#     q75 = quantile(bin_preds, 0.75)
+#     q90 = quantile(bin_preds, 0.90)
+
+#     stats[midpt] = (q10=q10, q25=q25, q50=q50, q75=q75, q90=q90)
+#     outlier_ind = findall(y -> y < q10 || y > q90, bin_preds)
+#     append!(x_outliers, fill(midpt, length(outlier_ind)))
+#     append!(y_outliers, bin_preds[outlier_ind])
+# end
+
+# midpts_plot = collect(keys(stats))
+# q10s = [s.q10 for s in values(stats)]
+# q25s = [s.q25 for s in values(stats)]
+# q50s = [s.q50 for s in values(stats)]
+# q75s = [s.q75 for s in values(stats)]
+# q90s = [s.q90 for s in values(stats)]
+
+# fig_box = Figure(size = (800, 600))
+# ax_box = Axis(fig_box[1, 1],
+#     xlabel="true expression val",
+#     ylabel="predicted expression val",
+#     title="predicted vs. true expression",
+# )
+
+# scatter!(ax_box, x_outliers, y_outliers, markersize = 5, alpha = 0.5)
+
+# # between 10th quartile and 25th quartile (upper)
+# rangebars!(ax_box, midpts_plot, q10s, q25s,
+#     color = :black,
+#     whiskerwidth = 0.5
+# )
+
+# # between 75th quartile nad 90th quartile (lower)
+# rangebars!(ax_box, midpts_plot, q75s, q90s,
+#     color = :black,
+#     whiskerwidth = 0.5
+# )
+
+# boxplot!(ax_box, grouped_trues_midpts, grouped_preds,
+#     width = 0.5,
+#     range = false,
+#     whiskerlinewidth = 0,
+#     show_outliers = false
+# )
+
+# display(fig_box)
+# save(joinpath("/home/golem/scratch/chans/lincs/plots/untrt/masked_expression/2025-08-18_16-03", "new_boxplot.png"), fig_box)
+
+#######################################################################################################################################
+
+### boxplot and histogram combined
+
 min_val = minimum(all_trues)
 max_val = maximum(all_trues)
 
@@ -360,36 +472,88 @@ max_val = maximum(all_trues)
 bin_edges = min_val:1.0:max_val
 bin_midpts = (bin_edges[1:end-1] .+ bin_edges[2:end]) ./ 2
 
-# prep boxplot data
+stats = Dict()
+x_outliers = Float32[]
+y_outliers = Float32[]
 grouped_preds = Float32[]
 grouped_trues_midpts = Float64[]
 
-for i in 1:length(bin_edges)-1
-    indices = findall(x -> bin_edges[i] <= x < bin_edges[i+1], all_trues)
-    if !isempty(indices)
-        preds_in_bin = all_preds[indices]
-        midpoint = bin_midpts[i]
-        append!(grouped_preds, preds_in_bin)
-        append!(grouped_trues_midpts, fill(midpoint, length(preds_in_bin)))
-    end
+for (i, midpt) in enumerate(bin_midpts) # for each bin
+    ind = findall(x -> bin_edges[i] <= x < bin_edges[i+1], all_trues)
+    bin_preds = all_preds[ind]
+    append!(grouped_preds, bin_preds)
+    append!(grouped_trues_midpts, fill(midpt, length(bin_preds)))
+
+    q10 = quantile(bin_preds, 0.10)
+    q25 = quantile(bin_preds, 0.25)
+    q50 = quantile(bin_preds, 0.50)
+    q75 = quantile(bin_preds, 0.75)
+    q90 = quantile(bin_preds, 0.90)
+
+    stats[midpt] = (q10=q10, q25=q25, q50=q50, q75=q75, q90=q90)
+    outlier_ind = findall(y -> y < q10 || y > q90, bin_preds)
+    append!(x_outliers, fill(midpt, length(outlier_ind)))
+    append!(y_outliers, bin_preds[outlier_ind])
 end
 
-# create the boxplot figure and axis
+midpts_plot = collect(keys(stats))
+q10s = [s.q10 for s in values(stats)]
+q25s = [s.q25 for s in values(stats)]
+q50s = [s.q50 for s in values(stats)]
+q75s = [s.q75 for s in values(stats)]
+q90s = [s.q90 for s in values(stats)] 
+
 begin
-fig_box = Figure(size = (800, 600))
-ax_box = Axis(fig_box[1, 1],
-    xlabel="true expression val",
-    ylabel="predicted expression val",
-    title="predicted vs. true expression"
-)
+    # setup
+    fig = Figure(size = (800, 800))
+    ax_box = Axis(fig[1, 1],
+        xlabel="",
+        ylabel="predicted expression value",
+        title="predicted vs. true expression values"
+    )
+    ax_hist = Axis(fig[2, 1],
+        xlabel="true expression value",
+        ylabel="count",
+        title="distribution of true expression values",
+        xticks = 0:5:15,
+    )
+    linkxaxes!(ax_box, ax_hist)
 
-# plot the boxplot data
-boxplot!(ax_box, grouped_trues_midpts, grouped_preds, range=0, whiskerlinewidth=0)
-# ablines!(ax_box, 0, 1, color=:black, linestyle=:dash, linewidth=1)
-fig_box
+    # boxplot
+    scatter!(ax_box, x_outliers, y_outliers, markersize = 5, alpha = 0.5)
+
+    # between 10th quartile and 25th quartile (upper)
+    rangebars!(ax_box, midpts_plot, q10s, q25s,
+        color = :black,
+        whiskerwidth = 0.5
+    )
+
+    # between 75th quartile nad 90th quartile (lower)
+    rangebars!(ax_box, midpts_plot, q75s, q90s,
+        color = :black,
+        whiskerwidth = 0.5
+    )
+
+    boxplot!(ax_box, grouped_trues_midpts, grouped_preds,
+        range = false,
+        whiskerlinewidth = 0,
+        show_outliers = false
+    )
+
+    # histogram
+    hist!(ax_hist, all_trues, bins = bin_edges,
+        strokecolor = :black,
+        strokewidth = 1
+    )
+
+    rowgap!(fig.layout, 1, 10) # gap between plots
+
+    display(fig)
 end
-save(joinpath(save_dir, "boxplot.png"), fig_box)
 
+save(joinpath("/home/golem/scratch/chans/lincs/plots/untrt/masked_expression/2025-08-18_16-03", "box_hist.png"), fig)
+
+#######################################################################################################################################
 
 # plot hexbin
 fig_hex = Figure(size = (800, 600))
