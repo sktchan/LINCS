@@ -5,11 +5,13 @@ Pkg.activate("/home/golem/scratch/chans/lincs")
 using LincsProject, DataFrames, CSV, Dates, JSON, StatsBase, JLD2, SparseArrays, Dates, Printf, Profile
 using Flux, Random, OneHotArrays, CategoricalArrays, ProgressBars, CUDA, Statistics, CairoMakie, LinearAlgebra
 CUDA.device!(1)
+# GC.gc()
+# CUDA.reclaim()
 
 start_time = now()
 
-data = load("data/lincs_untrt_data.jld2")["filtered_data"] # untrt only
-# data = load("data/lincs_trt_untrt_data.jld2")["filtered_data"] # trt and untrt data ### REMEMBER TO NOT SAVE PREDSTRUES.CSV IF RUNNING THIS ONE
+# data = load("data/lincs_untrt_data.jld2")["filtered_data"] # untrt only
+data = load("data/lincs_trt_untrt_data.jld2")["filtered_data"] # trt and untrt data ### REMEMBER TO NOT SAVE PREDSTRUES.CSV IF RUNNING THIS ONE
 
 @time X = data.expr #!# use raw expression values!!!
 
@@ -224,9 +226,9 @@ X_test_masked, y_test_masked = mask_input(X_test)
 # n_genes, n_samples = size(X) # n_genes already defined
 n_samples = size(X, 2)
 batch_size = 128
-n_epochs = 300
+n_epochs = 30
 embed_dim = 128
-hidden_dim = 256
+hidden_dim = 236
 n_heads = 2
 n_layers = 4
 drop_prob = 0.05
@@ -269,7 +271,7 @@ function loss(model::Model, x, y, mode::String)
         return regression_loss, preds_masked, y_masked
     end
 end
-println("starting traintest loop")
+
 train_losses = Float32[]
 test_losses = Float32[]
 #!# accuracy doesn't work for regression, removed it
@@ -294,7 +296,10 @@ for epoch in ProgressBar(1:n_epochs)
         Flux.update!(opt, model, grads[1])
         loss_val = loss(model, x_gpu, y_gpu, "train")
         push!(epoch_losses, loss_val)
+        # println("hi")
     end
+
+    # println("!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!")
 
     push!(train_losses, mean(epoch_losses))
 
@@ -395,71 +400,71 @@ correlation = cor(all_trues, all_preds)
 
 ### just boxplot
 
-# min_val = minimum(all_trues)
-# max_val = maximum(all_trues)
+min_val = minimum(all_trues)
+max_val = maximum(all_trues)
 
-# # define bins
-# bin_edges = min_val:1.0:max_val
-# bin_midpts = (bin_edges[1:end-1] .+ bin_edges[2:end]) ./ 2
+# define bins
+bin_edges = min_val:1.0:max_val
+bin_midpts = (bin_edges[1:end-1] .+ bin_edges[2:end]) ./ 2
 
-# stats = Dict()
-# x_outliers = Float32[]
-# y_outliers = Float32[]
+stats = Dict()
+x_outliers = Float32[]
+y_outliers = Float32[]
 
 
-# for (i, midpt) in enumerate(bin_midpts) # for each bin
-#     ind = findall(x -> bin_edges[i] <= x < bin_edges[i+1], all_trues)
-#     bin_preds = all_preds[ind]
+for (i, midpt) in enumerate(bin_midpts) # for each bin
+    ind = findall(x -> bin_edges[i] <= x < bin_edges[i+1], all_trues)
+    bin_preds = all_preds[ind]
 
-#     q10 = quantile(bin_preds, 0.10)
-#     q25 = quantile(bin_preds, 0.25)
-#     q50 = quantile(bin_preds, 0.50)
-#     q75 = quantile(bin_preds, 0.75)
-#     q90 = quantile(bin_preds, 0.90)
+    q10 = quantile(bin_preds, 0.10)
+    q25 = quantile(bin_preds, 0.25)
+    q50 = quantile(bin_preds, 0.50)
+    q75 = quantile(bin_preds, 0.75)
+    q90 = quantile(bin_preds, 0.90)
 
-#     stats[midpt] = (q10=q10, q25=q25, q50=q50, q75=q75, q90=q90)
-#     outlier_ind = findall(y -> y < q10 || y > q90, bin_preds)
-#     append!(x_outliers, fill(midpt, length(outlier_ind)))
-#     append!(y_outliers, bin_preds[outlier_ind])
-# end
+    stats[midpt] = (q10=q10, q25=q25, q50=q50, q75=q75, q90=q90)
+    outlier_ind = findall(y -> y < q10 || y > q90, bin_preds)
+    append!(x_outliers, fill(midpt, length(outlier_ind)))
+    append!(y_outliers, bin_preds[outlier_ind])
+end
 
-# midpts_plot = collect(keys(stats))
-# q10s = [s.q10 for s in values(stats)]
-# q25s = [s.q25 for s in values(stats)]
-# q50s = [s.q50 for s in values(stats)]
-# q75s = [s.q75 for s in values(stats)]
-# q90s = [s.q90 for s in values(stats)]
+midpts_plot = collect(keys(stats))
+q10s = [s.q10 for s in values(stats)]
+q25s = [s.q25 for s in values(stats)]
+q50s = [s.q50 for s in values(stats)]
+q75s = [s.q75 for s in values(stats)]
+q90s = [s.q90 for s in values(stats)]
 
-# fig_box = Figure(size = (800, 600))
-# ax_box = Axis(fig_box[1, 1],
-#     xlabel="true expression val",
-#     ylabel="predicted expression val",
-#     title="predicted vs. true expression",
-# )
+fig_box = Figure(size = (800, 600))
+ax_box = Axis(fig_box[1, 1],
+    xlabel="true expression val",
+    ylabel="predicted expression val",
+    title="predicted vs. true expression",
+)
 
-# scatter!(ax_box, x_outliers, y_outliers, markersize = 5, alpha = 0.5)
+scatter!(ax_box, x_outliers, y_outliers, markersize = 5, alpha = 0.5)
 
-# # between 10th quartile and 25th quartile (upper)
-# rangebars!(ax_box, midpts_plot, q10s, q25s,
-#     color = :black,
-#     whiskerwidth = 0.5
-# )
+# between 10th quartile and 25th quartile (upper)
+rangebars!(ax_box, midpts_plot, q10s, q25s,
+    color = :black,
+    whiskerwidth = 0.5
+)
 
-# # between 75th quartile nad 90th quartile (lower)
-# rangebars!(ax_box, midpts_plot, q75s, q90s,
-#     color = :black,
-#     whiskerwidth = 0.5
-# )
+# between 75th quartile nad 90th quartile (lower)
+rangebars!(ax_box, midpts_plot, q75s, q90s,
+    color = :black,
+    whiskerwidth = 0.5
+)
 
-# boxplot!(ax_box, grouped_trues_midpts, grouped_preds,
-#     width = 0.5,
-#     range = false,
-#     whiskerlinewidth = 0,
-#     show_outliers = false
-# )
+boxplot!(ax_box, grouped_trues_midpts, grouped_preds,
+    width = 0.5,
+    range = false,
+    whiskerlinewidth = 0,
+    show_outliers = false
+)
 
-# display(fig_box)
-# save(joinpath("/home/golem/scratch/chans/lincs/plots/untrt/masked_expression/2025-08-18_16-03", "new_boxplot.png"), fig_box)
+display(fig_box)
+save(joinpath(save_dir, "new_boxplot.png"), fig_box)
 
 #######################################################################################################################################
 
@@ -551,7 +556,7 @@ begin
     display(fig)
 end
 
-save(joinpath("/home/golem/scratch/chans/lincs/plots/untrt/masked_expression/2025-08-18_16-03", "box_hist.png"), fig)
+save(joinpath(save_dir, "box_hist.png"), fig)
 
 #######################################################################################################################################
 
@@ -621,7 +626,7 @@ run_minutes = rem(total_minutes, 60)
 params_txt = joinpath(save_dir, "params.txt")
 open(params_txt, "w") do io
     println(io, "PARAMETERS:")
-    println(io, "########### this was on kraken")
+    println(io, "########### this was on smaug")
     println(io, "dataset = untrt")
     println(io, "masking_ratio = $mask_ratio")
     println(io, "mask_value = $MASK_VALUE")

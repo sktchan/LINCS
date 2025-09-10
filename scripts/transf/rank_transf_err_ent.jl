@@ -273,11 +273,11 @@ X_test_masked, y_test_masked = mask_input(X_test)
 ### training
 
 n_genes, n_samples = size(X)
-batch_size = 128
-n_epochs = 30
-embed_dim = 128
-hidden_dim = 256
-n_heads = 2
+batch_size = 64
+n_epochs = 5
+embed_dim = 64
+hidden_dim = 128
+n_heads = 1
 n_layers = 4
 drop_prob = 0.05
 lr = 0.001
@@ -319,11 +319,13 @@ end
 
 train_losses = Float32[]
 test_losses = Float32[]
-
 test_rank_errors = Float32[]
 
+# Data for final plots
 all_preds = Int[]
 all_trues = Int[]
+all_original_ranks = Int[]
+all_prediction_errors = Int[]
 
 for epoch in ProgressBar(1:n_epochs)
 
@@ -360,22 +362,37 @@ for epoch in ProgressBar(1:n_epochs)
         logits_cpu = cpu(logits_masked)
         y_cpu = cpu(y_masked)
 
-        # error in rank pred vs rank true calculated here
-        # similar to regression like mse/rmse BUT this kinda makes more sense cuz predicted gene id - actual gene id isn't significant (right?)
-        for r in 1:length(y_cpu) 
-            true_gene_id = y_cpu[r] # actual mask value
-            prediction_logits = logits_cpu[:, r] # probabilities for theh first mask
-            ranked_gene_ids = sortperm(prediction_logits, rev=true) # list of most likely genes from highest to lowest likely prediction
-            predicted_rank = findfirst(isequal(true_gene_id), ranked_gene_ids) # the rank that the true gene was ranked at
+        # Get original ranks of masked items for the new plot, but only on the final epoch
+        if epoch == n_epochs
+            y_cpu_batch = cpu(y_gpu)
+            masked_indices_cartesian = findall(y_cpu_batch .!= -100)
+            original_ranks_in_batch = [idx[1] for idx in masked_indices_cartesian]
+        end
+
+        # Calculate error in rank prediction vs true rank
+        for i in 1:length(y_cpu)
+            true_gene_id = y_cpu[i]
+            prediction_logits = logits_cpu[:, i]
+            ranked_gene_ids = sortperm(prediction_logits, rev=true)
+            predicted_rank = findfirst(isequal(true_gene_id), ranked_gene_ids)
             
             if !isnothing(predicted_rank)
-                push!(epoch_rank_errors, predicted_rank - 1) # error is pred rank - 1
+                error = predicted_rank - 1
+                push!(epoch_rank_errors, error)
+                
+                # Store data for the new plot on the final epoch
+                if epoch == n_epochs
+                    original_rank = original_ranks_in_batch[i]
+                    push!(all_original_ranks, original_rank)
+                    push!(all_prediction_errors, error)
+                end
             end
         end
 
+        # Collect data for other plots on the final epoch
         if epoch == n_epochs
-            predicted_ranks = Flux.onecold(logits_masked)
-            append!(all_preds, cpu(predicted_ranks))
+            predicted_ids = Flux.onecold(logits_masked)
+            append!(all_preds, cpu(predicted_ids))
             append!(all_trues, y_cpu)
         end
     end
@@ -496,6 +513,25 @@ Colorbar(fig_hex[1, 2], hexplot, label="point count")
 # ablines!(ax_hex, 0, 1, color=:red, linestyle=:dash, linewidth=2)
 save(joinpath(save_dir, "hexbin.png"), fig_hex)
 
+# NEW PLOT: MASKED PREDICTION ERROR BY RANK (SCATTER)
+
+# log rank vs error data
+df_rank_errors = DataFrame(
+    original_rank = all_original_ranks, 
+    prediction_error = all_prediction_errors
+)
+CSV.write(joinpath(save_dir, "rank_vs_error.csv"), df_rank_errors)
+
+fig_rank_error_scatter = Figure(size = (800, 600))
+ax_rank_error_scatter = Axis(fig_rank_error_scatter[1, 1],
+    xlabel = "rank (1 = highest exp)",
+    ylabel = "prediction error",
+    title = "prediction error by rank"
+)
+scatter!(ax_rank_error_scatter, all_original_ranks, all_prediction_errors, markersize=4, alpha=0.3)
+save(joinpath(save_dir, "rank_vs_error_scatter.png"), fig_rank_error_scatter)
+
+
 # log data
 df_losses = DataFrame(
     epoch = 1:n_epochs,
@@ -515,7 +551,7 @@ CSV.write(joinpath(save_dir, "predstrues.csv"), df_preds)
 params_txt = joinpath(save_dir, "params.txt")
 open(params_txt, "w") do io
     println(io, "PARAMETERS:")
-    println(io, "########### this was on smaug")
+    println(io, "########### this was on kraken")
     println(io, "dataset = untrt")
     println(io, "masking_ratio = $mask_ratio")
     println(io, "NO DYNAMIC MASKING")
@@ -527,7 +563,7 @@ open(params_txt, "w") do io
     println(io, "n_layers = $n_layers")
     println(io, "learning_rate = $lr")
     println(io, "dropout_probability = $drop_prob")
-    println(io, "ADDITIONAL NOTES: trying out boxplot and hexbins and cairomakie for everything to comapre to exp plots, fixed plotting but still 10ep")
+    println(io, "ADDITIONAL NOTES: testing out error by rank plot on trt, lowered params cuz time crunch")
     println(io, "run_time = $(run_hours) hours and $(run_minutes) minutes")
     # println(io, "correlation = $correlation")
 end
