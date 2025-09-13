@@ -5,6 +5,7 @@ frogs_src/
 output_logs/
 nohup.out
 **/predstrues.csv
+**/rank_vs_error.csv
 
 # ignore files where i test misc. stuff out
 practice/

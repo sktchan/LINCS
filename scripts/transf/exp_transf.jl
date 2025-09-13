@@ -4,7 +4,7 @@ Pkg.activate("/home/golem/scratch/chans/lincs")
 # using Infiltrator
 using LincsProject, DataFrames, CSV, Dates, JSON, StatsBase, JLD2, SparseArrays, Dates, Printf, Profile
 using Flux, Random, OneHotArrays, CategoricalArrays, ProgressBars, CUDA, Statistics, CairoMakie, LinearAlgebra
-CUDA.device!(1)
+CUDA.device!(0)
 # GC.gc()
 # CUDA.reclaim()
 
@@ -150,7 +150,6 @@ end
 
 Flux.@functor Model
 
-#!# fwd pass for raw float inputs
 function (model::Model)(input::Float32Matrix2DType)
     seq_len, batch_size = size(input)
 
