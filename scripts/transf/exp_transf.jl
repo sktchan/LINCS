@@ -11,7 +11,7 @@ CUDA.device!(0)
 start_time = now()
 
 # data = load("data/lincs_untrt_data.jld2")["filtered_data"] # untrt only
-data = load("data/lincs_trt_untrt_data.jld2")["filtered_data"] # trt and untrt data ### REMEMBER TO NOT SAVE PREDSTRUES.CSV IF RUNNING THIS ONE
+data = load("data/lincs_trt_untrt_data.jld2")["filtered_data"] # trt and untrt data
 
 @time X = data.expr #!# use raw expression values!!!
 
@@ -323,7 +323,7 @@ println("starting eval metrics")
 
 # mk dir
 timestamp = Dates.format(now(), "yyyy-mm-dd_HH-MM")
-save_dir = joinpath("plots", "untrt", "masked_expression", timestamp)
+save_dir = joinpath("plots", "trt_and_untrt", "masked_expression", timestamp)
 mkpath(save_dir)
 
 # loss plot
@@ -343,12 +343,20 @@ save(joinpath(save_dir, "loss.png"), fig_loss)
 all_preds = Float32[]
 all_trues = Float32[]
 test_epoch_losses = Float32[]
+all_gene_indices = Int[]
 
 for start_idx in 1:batch_size:size(X_test_masked, 2)
     end_idx = min(start_idx + batch_size - 1, size(X_test_masked, 2))
     x_gpu = gpu(X_test_masked[:, start_idx:end_idx])
     y_gpu = gpu(y_test_masked[:, start_idx:end_idx])
     test_loss_val, preds_masked, y_masked = loss(model, x_gpu, y_gpu, "test")
+
+    # for calcualting predicted error per gene
+    y_cpu_batch = cpu(y_gpu)
+    masked_indices_cartesian = findall(!isnan, y_cpu_batch)
+    original_gene_indices = [idx[1] for idx in masked_indices_cartesian]
+    append!(all_gene_indices, original_gene_indices)
+
     push!(test_epoch_losses, test_loss_val)
     append!(all_preds, cpu(preds_masked))
     append!(all_trues, cpu(y_masked))
@@ -397,73 +405,73 @@ correlation = cor(all_trues, all_preds)
 
 #######################################################################################################################################
 
-### just boxplot
+# ### just boxplot
 
-min_val = minimum(all_trues)
-max_val = maximum(all_trues)
+# min_val = minimum(all_trues)
+# max_val = maximum(all_trues)
 
-# define bins
-bin_edges = min_val:1.0:max_val
-bin_midpts = (bin_edges[1:end-1] .+ bin_edges[2:end]) ./ 2
+# # define bins
+# bin_edges = min_val:1.0:max_val
+# bin_midpts = (bin_edges[1:end-1] .+ bin_edges[2:end]) ./ 2
 
-stats = Dict()
-x_outliers = Float32[]
-y_outliers = Float32[]
+# stats = Dict()
+# x_outliers = Float32[]
+# y_outliers = Float32[]
 
 
-for (i, midpt) in enumerate(bin_midpts) # for each bin
-    ind = findall(x -> bin_edges[i] <= x < bin_edges[i+1], all_trues)
-    bin_preds = all_preds[ind]
+# for (i, midpt) in enumerate(bin_midpts) # for each bin
+#     ind = findall(x -> bin_edges[i] <= x < bin_edges[i+1], all_trues)
+#     bin_preds = all_preds[ind]
 
-    q10 = quantile(bin_preds, 0.10)
-    q25 = quantile(bin_preds, 0.25)
-    q50 = quantile(bin_preds, 0.50)
-    q75 = quantile(bin_preds, 0.75)
-    q90 = quantile(bin_preds, 0.90)
+#     q10 = quantile(bin_preds, 0.10)
+#     q25 = quantile(bin_preds, 0.25)
+#     q50 = quantile(bin_preds, 0.50)
+#     q75 = quantile(bin_preds, 0.75)
+#     q90 = quantile(bin_preds, 0.90)
 
-    stats[midpt] = (q10=q10, q25=q25, q50=q50, q75=q75, q90=q90)
-    outlier_ind = findall(y -> y < q10 || y > q90, bin_preds)
-    append!(x_outliers, fill(midpt, length(outlier_ind)))
-    append!(y_outliers, bin_preds[outlier_ind])
-end
+#     stats[midpt] = (q10=q10, q25=q25, q50=q50, q75=q75, q90=q90)
+#     outlier_ind = findall(y -> y < q10 || y > q90, bin_preds)
+#     append!(x_outliers, fill(midpt, length(outlier_ind)))
+#     append!(y_outliers, bin_preds[outlier_ind])
+# end
 
-midpts_plot = collect(keys(stats))
-q10s = [s.q10 for s in values(stats)]
-q25s = [s.q25 for s in values(stats)]
-q50s = [s.q50 for s in values(stats)]
-q75s = [s.q75 for s in values(stats)]
-q90s = [s.q90 for s in values(stats)]
+# midpts_plot = collect(keys(stats))
+# q10s = [s.q10 for s in values(stats)]
+# q25s = [s.q25 for s in values(stats)]
+# q50s = [s.q50 for s in values(stats)]
+# q75s = [s.q75 for s in values(stats)]
+# q90s = [s.q90 for s in values(stats)]
 
-fig_box = Figure(size = (800, 600))
-ax_box = Axis(fig_box[1, 1],
-    xlabel="true expression val",
-    ylabel="predicted expression val",
-    title="predicted vs. true expression",
-)
+# fig_box = Figure(size = (800, 600))
+# ax_box = Axis(fig_box[1, 1],
+#     xlabel="true expression val",
+#     ylabel="predicted expression val",
+#     title="predicted vs. true expression",
+# )
 
-scatter!(ax_box, x_outliers, y_outliers, markersize = 5, alpha = 0.5)
+# scatter!(ax_box, x_outliers, y_outliers, markersize = 5, alpha = 0.5)
 
-# between 10th quartile and 25th quartile (upper)
-rangebars!(ax_box, midpts_plot, q10s, q25s,
-    color = :black,
-    whiskerwidth = 0.5
-)
+# # between 10th quartile and 25th quartile (upper)
+# rangebars!(ax_box, midpts_plot, q10s, q25s,
+#     color = :black,
+#     whiskerwidth = 0.5
+# )
 
-# between 75th quartile nad 90th quartile (lower)
-rangebars!(ax_box, midpts_plot, q75s, q90s,
-    color = :black,
-    whiskerwidth = 0.5
-)
+# # between 75th quartile nad 90th quartile (lower)
+# rangebars!(ax_box, midpts_plot, q75s, q90s,
+#     color = :black,
+#     whiskerwidth = 0.5
+# )
 
-boxplot!(ax_box, grouped_trues_midpts, grouped_preds,
-    width = 0.5,
-    range = false,
-    whiskerlinewidth = 0,
-    show_outliers = false
-)
+# boxplot!(ax_box, grouped_trues_midpts, grouped_preds,
+#     width = 0.5,
+#     range = false,
+#     whiskerlinewidth = 0,
+#     show_outliers = false
+# )
 
-display(fig_box)
-save(joinpath(save_dir, "new_boxplot.png"), fig_box)
+# display(fig_box)
+# save(joinpath(save_dir, "new_boxplot.png"), fig_box)
 
 #######################################################################################################################################
 
@@ -601,19 +609,21 @@ save(joinpath(save_dir, "avg_hexbin.png"), fig_baseline_hex)
 #######################################################################################################################################
 
 # log data
-df_losses = DataFrame(
-    epoch = 1:n_epochs,
-    train_loss = train_losses,
-    test_loss = test_losses
+jldsave(joinpath(save_dir, "losses.jld2"); 
+    epochs = 1:n_epochs, 
+    train_losses = train_losses, 
+    test_losses = test_losses
 )
-CSV.write(joinpath(save_dir, "losses.csv"), df_losses)
 
 # log pred/true
-df_preds = DataFrame(
-    all_preds = all_preds,
-    all_trues = all_trues
+jldsave(joinpath(save_dir, "predstrues.jld2"); 
+    all_preds = all_preds, 
+    all_trues = all_trues,
+    all_gene_indices = all_gene_indices
 )
-CSV.write(joinpath(save_dir, "predstrues.csv"), df_preds)
+
+# saving whole test set as well (just in case!)
+jldsave(joinpath(save_dir, "masked_test_data.jld2"); X=X_test_masked, y=y_test_masked)
 
 end_time = now()
 run_time = end_time - start_time
@@ -626,7 +636,7 @@ params_txt = joinpath(save_dir, "params.txt")
 open(params_txt, "w") do io
     println(io, "PARAMETERS:")
     println(io, "########### this was on smaug")
-    println(io, "dataset = untrt")
+    println(io, "dataset = trt")
     println(io, "masking_ratio = $mask_ratio")
     println(io, "mask_value = $MASK_VALUE")
     println(io, "NO DYNAMIC MASKING")
@@ -638,7 +648,7 @@ open(params_txt, "w") do io
     println(io, "n_layers = $n_layers")
     println(io, "learning_rate = $lr")
     println(io, "dropout_probability = $drop_prob")
-    println(io, "ADDITIONAL NOTES: longer run with fixed metrics")
+    println(io, "ADDITIONAL NOTES: 30ep run on trt w/ fixed saving")
     println(io, "run_time = $(run_hours) hours and $(run_minutes) minutes")
     println(io, "correlation = $correlation"),
     println(io, "mse model = $mse_model"),

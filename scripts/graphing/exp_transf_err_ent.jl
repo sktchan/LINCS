@@ -363,19 +363,19 @@ for start_idx in 1:batch_size:size(X_test_masked, 2)
     append!(all_trues, cpu(y_masked))
 end
 
-all_preds = Float32[]
-all_trues = Float32[]
-test_epoch_losses = Float32[]
-all_gene_indices = Int[]
+# all_preds = Float32[]
+# all_trues = Float32[]
+# test_epoch_losses = Float32[]
+# all_gene_indices = Int[]
 
-for start_idx in 1:batch_size:size(X_test_masked, 2)
-    end_idx = min(start_idx + batch_size - 1, size(X_test_masked, 2))
-    x_gpu = gpu(X_test_masked[:, start_idx:end_idx])
-    y_gpu = gpu(y_test_masked[:, start_idx:end_idx])
-    test_loss_val, preds_masked, y_masked = loss(model, x_gpu, y_gpu, "test")
+# for start_idx in 1:batch_size:size(X_test_masked, 2)
+#     end_idx = min(start_idx + batch_size - 1, size(X_test_masked, 2))
+#     x_gpu = gpu(X_test_masked[:, start_idx:end_idx])
+#     y_gpu = gpu(y_test_masked[:, start_idx:end_idx])
+#     test_loss_val, preds_masked, y_masked = loss(model, x_gpu, y_gpu, "test")
 
-    append!(all_trues, cpu(y_masked))
-end
+#     append!(all_trues, cpu(y_masked))
+# end
 
 correlation = cor(all_trues, all_preds)
 
