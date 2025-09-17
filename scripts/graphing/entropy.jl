@@ -8,7 +8,7 @@ Pkg.activate("/home/golem/scratch/chans/lincs")
 # using Infiltrator
 using LincsProject, DataFrames, CSV, Dates, JSON, StatsBase, JLD2, SparseArrays, Dates, Printf, Profile
 using Flux, Random, OneHotArrays, CategoricalArrays, ProgressBars, CUDA, Statistics, CairoMakie, LinearAlgebra
-CUDA.device!(2)
+CUDA.device!(0)
 
 start_time = now()
 
@@ -163,3 +163,81 @@ begin
     display(fig)
 end
 save(joinpath(save_dir, "cellline_entropy_0.01.png"), fig)
+
+#######################################################################################################################################
+
+### calculating standard deviation per row (gene expression) 
+
+eX = data.expr
+
+gene_std_devs = Float64[] 
+
+for gene_row in eachrow(eX) 
+    s = std(gene_row)
+    push!(gene_std_devs, s)
+end
+
+gene_indices = 1:size(eX, 1)
+
+begin 
+    fig_ex_std = Figure(size = (800, 600)) 
+    ax_ex_std = Axis(fig_ex_std[1, 1], 
+        xlabel="gene index",
+        ylabel = "standard deviation", 
+        title= "standard deviation in expression by gene")
+
+    scatter!(ax_ex_std, gene_indices, gene_std_devs, alpha = 0.5) 
+    display(fig_ex_std) 
+end
+
+save_dir = "/home/golem/scratch/chans/lincs/plots/trt_and_untrt/infographs"
+save(joinpath(save_dir, "gene_exp_std_dev_trt.png"), fig_ex_std)
+
+
+#######################################################################################################################################
+
+### organizing by highest --> lowest expression
+
+gene_means = [mean(row) for row in eachrow(eX)]
+gene_std_devs = [std(row) for row in eachrow(eX)]
+gene_indices = 1:size(eX, 1)
+
+begin
+    fig_mean_expr = Figure(size = (800, 600))
+    ax_mean_expr = Axis(fig_mean_expr[1, 1],
+        xlabel = "gene index",
+        ylabel = "mean expression level",
+        title = "expression level by gene")
+
+    scatter!(ax_mean_expr, gene_indices, gene_means, alpha = 0.5)
+    display(fig_mean_expr)
+end
+save(joinpath(save_dir, "gene_mean_exp_trt.png"), fig_mean_expr)
+
+sorted_indices_by_mean = sortperm(gene_means, rev=true)
+jldsave("/home/golem/scratch/chans/lincs/plots/trt_and_untrt/infographs/sorted_gene_indices_by_exp.jld2"; sorted_indices_by_mean)
+
+begin
+    fig_mean_sorted = Figure(size = (800, 600))
+    ax_mean_sorted = Axis(fig_mean_sorted[1, 1],
+        xlabel = "gene index (sorted)",
+        ylabel = "mean expression level",
+        title = "expression level by sorted gene")
+
+    scatter!(ax_mean_sorted, gene_indices, gene_means[sorted_indices_by_mean], alpha = 0.5)
+    display(fig_mean_sorted)
+end
+save(joinpath(save_dir, "sorted_gene_mean_exp_trt.png"), fig_mean_sorted)
+
+begin
+    fig_std_sorted = Figure(size = (800, 600))
+    ax_std_sorted = Axis(fig_std_sorted[1, 1],
+        xlabel = "gene index (sorted)",
+        ylabel = "standard deviation",
+        title = "standard deviation by sorted gene")
+
+    scatter!(ax_std_sorted, gene_indices, gene_std_devs[sorted_indices_by_mean], alpha = 0.5)
+    display(fig_std_sorted)
+end
+
+save(joinpath(save_dir, "sorted_gene_std_dev_trt.png"), fig_std_sorted)

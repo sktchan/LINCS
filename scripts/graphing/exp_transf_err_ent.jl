@@ -603,7 +603,7 @@ begin
     display(fig)
 end
 
-save(joinpath("/home/golem/scratch/chans/lincs/plots/trt_and_untrt/masked_rankings/2025-09-11_08-26", "histogram.png"), fig)
+save(joinpath(save_dir, "histogram.png"), fig)
 
 
 #######################################################################################################################################
@@ -640,11 +640,56 @@ begin
         ylabel = "absolute prediction error"
     )
     
-    scatter!(ax_gene_error_scatter, all_gene_indices, absolute_errors, markersize=4, alpha=0.3)
+    scatter!(ax_gene_error_scatter, all_gene_indices, absolute_errors, alpha=0.5)
     display(fig_gene_error_scatter)
 end
 
 save(joinpath(save_dir, "gene_vs_error_scatter.png"), fig_gene_error_scatter)
+
+# NEW PLOT: MEAN ERROR BY SORTED GENE
+
+df_mean_error = combine(groupby(df_gene_errors, :gene_index), :absolute_error => mean => :mean_absolute_error)
+
+begin
+    fig_gene_meanerror = Figure(size = (800, 600))
+    ax_gene_meanerror= Axis(fig_gene_meanerror[1, 1],
+        title = "mean absolute error by gene",
+        xlabel = "gene index",
+        ylabel = "mean error"
+    )
+    
+    scatter!(ax_gene_meanerror, df_mean_error.gene_index, df_mean_error.mean_absolute_error, alpha=0.5)
+    display(fig_gene_meanerror)
+end
+
+save(joinpath(save_dir, "gene_vs_meanerror.png"), fig_gene_meanerror)
+
+# NEW PLOT: MEAN ERROR BY SORTED GENE
+
+sorted_indices_by_mean = load("/home/golem/scratch/chans/lincs/plots/trt_and_untrt/infographs/sorted_gene_indices_by_exp.jld2")["sorted_indices_by_mean"]
+
+# get means
+df_mean_error = combine(groupby(df_gene_errors, :gene_index), :absolute_error => mean => :mean_absolute_error)
+error_map = Dict(row.gene_index => row.mean_absolute_error for row in eachrow(df_mean_error))
+
+# get corresponding error from dict for each sorted idx
+sorted_mean_errors = [get(error_map, idx, 0) for idx in sorted_indices_by_mean]
+gene_ranks = 1:length(sorted_indices_by_mean)
+
+begin
+    fig_sort_error = Figure(size = (800, 600))
+    ax_sort_error = Axis(fig_sort_error[1, 1],
+        xlabel = "sorted gene index",
+        ylabel = "mean error",
+        title = "mean absolute error by sorted gene")
+
+    scatter!(ax_sort_error, gene_ranks, sorted_mean_errors, alpha = 0.5)
+    display(fig_sort_error)
+end
+
+save_dir = "/home/golem/scratch/chans/lincs/plots/untrt/masked_expression/2025-09-11_23-42"
+save(joinpath(save_dir, "sorted_gene_vs_meanerror.png"), fig_sort_error)
+
 
 #######################################################################################################################################
 

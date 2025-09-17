@@ -531,6 +531,23 @@ ax_rank_error_scatter = Axis(fig_rank_error_scatter[1, 1],
 scatter!(ax_rank_error_scatter, all_original_ranks, all_prediction_errors, markersize=4, alpha=0.3)
 save(joinpath(save_dir, "rank_vs_error_scatter.png"), fig_rank_error_scatter)
 
+# NEW PLOT: MEAN MASKED PREDICTION ERROR BY RANK (LINE)
+
+avg_errors = combine(groupby(df_rank_errors, :original_rank), :prediction_error => mean => :avg_error)
+fig_rank_error_line = Figure(size = (800, 600))
+ax_rank_error_line = Axis(fig_rank_error_line[1, 1],
+    xlabel = "rank (1 = highest exp)",
+    ylabel = "mean prediction error",
+    title = "mean prediction error by rank"
+)
+scatter!(ax_rank_error_line, avg_errors.original_rank, avg_errors.avg_error, alpha = 0.5)
+# display(fig_rank_error_line)
+save(joinpath(save_dir, "rank_vs_avgerror_scatter.png"), fig_rank_error_line)
+
+jldsave(joinpath(save_dir, "avg_errors.jld2"); 
+    original_rank = avg_errors.original_rank,
+    avg_error = avg_errors.avg_error
+)
 
 # log data
 df_losses = DataFrame(
